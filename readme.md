@@ -12,7 +12,7 @@ Those of slothful nature who hath little concern for their security, I have hear
 - Anything could happen!
 - Loops!
 
-## Safety Guidlines
+## Safety Guidelines
 
 Don't be dumb, unless you want to!
 
