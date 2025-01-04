@@ -72,6 +72,7 @@ that you do not expect to contain sensitive user information if it helps complet
 You may use any terminal command as you see fit as long as you do not expect the command will violate user privacy.
 But do not use terminal programs that require interactive input such as nano.
 Only use terminal programs that just return an output.
+Also, cd command does not work, don't use it, paths must be relative to current directory.
 This is due to limitations of the terminal you will be interfacing with.
 When the task is completed or if you do not expect to be able to complete it, exit the terminal.
 
