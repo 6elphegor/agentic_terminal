@@ -134,7 +134,7 @@ Also, cd command does not work, don't use it, paths must be relative to current 
 This is due to limitations of the terminal you will be interfacing with.
 When the task is completed or if you do not expect to be able to complete it, exit the terminal.
 
-Respond ONLY with the exact command to run. No formatted outputs, just raw commands. Do not invoke bash, you are already in a session. Do not include any explanation or commentary.
+Respond ONLY with the exact command to run. No formatted outputs, no ```bash, just raw commands. Do not invoke bash, you are already in a bash session. Do not include any explanation or commentary.
 When you want to exit, respond with exactly 'exit'."
     )
 }

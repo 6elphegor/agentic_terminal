@@ -127,14 +127,27 @@ impl From<reqwest::StatusCode> for LLMApiError {
     }
 }
 
+
+
 impl LLMApi for OAIApi {
     fn prompt(&self, system_msg: &str, msgs: &[Message]) -> Result<String, LLMApiError> {
         let secret_key = self.secret_key.as_ref().ok_or(LLMApiError::AuthenticationError)?;
 
-        let mut messages = vec![OAIMessage {
-            role: OAIRole::Developer,
-            content: system_msg.to_string(),
-        }];
+        // As of January 2025 
+        // O1 models do not support developer messages
+        // change when support is added
+        let system_msg = match self.model {
+            Model::O1 | Model::O1Mini | Model::O1Preview => OAIMessage {
+                role: OAIRole::User,
+                content: system_msg.to_string(),
+            }, 
+            _ => OAIMessage {
+                role: OAIRole::Developer,
+                content: system_msg.to_string(),
+            }, 
+        };
+
+        let mut messages = vec![system_msg];
 
         messages.extend(msgs.iter().map(|msg| OAIMessage {
             role: msg.role.into(),
