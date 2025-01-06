@@ -43,8 +43,8 @@ enum ModelChoice {
 
 /// CLI tool for interacting with LLM APIs
 #[derive(Parser, Debug)]
-#[command(name = "llm-cli")]
-#[command(about = "A CLI tool for interacting with various LLM APIs", long_about = None)]
+#[command(name = "agentic-terminal")]
+#[command(about = "Manifest thy will by granting an LLM agentic access to a bash session.", long_about = None)]
 struct Cli {
     /// The task to perform
     task: String,
