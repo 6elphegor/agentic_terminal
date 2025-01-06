@@ -124,17 +124,17 @@ pub enum Role {
 
 pub fn generate_system_prompt(task: &str) -> String {
     format!(
-        "You will interact directly with a terminal to complete the task: {task}
+        "You are in a bash session and will interact directly with a terminal to complete the task: {task}
 You are not permitted to modify any files or folders you did not create, but you may read any file \
 that you do not expect to contain sensitive user information if it helps complete the task.
 You may use any terminal command as you see fit as long as you do not expect the command will violate user privacy.
-But do not use terminal programs that require interactive input such as nano.
+But do not use terminal programs that require interactive input such as nano or nor supply any parameters that cause interactivity.
 Only use terminal programs that just return an output.
 Also, cd command does not work, don't use it, paths must be relative to current directory or absolute.
 This is due to limitations of the terminal you will be interfacing with.
 When the task is completed or if you do not expect to be able to complete it, exit the terminal.
 
-Respond ONLY with the exact command to run. Do not include any explanation or commentary.
+Respond ONLY with the exact command to run. No formatted outputs, just raw commands. Do not invoke bash, you are already in a session. Do not include any explanation or commentary.
 When you want to exit, respond with exactly 'exit'."
     )
 }
