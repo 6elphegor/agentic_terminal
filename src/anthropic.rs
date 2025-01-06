@@ -27,6 +27,16 @@ pub enum Model {
     Opus3,
 }
 
+impl Model {
+    pub fn max_output_tokens(self) -> usize {
+        match self {
+            Model::Haiku3_5 => 8192, 
+            Model::Sonnet3_5 => 8192, 
+            Model::Opus3 => 4096, 
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 struct AnthropicRequest {
     model: Model,
@@ -163,7 +173,7 @@ impl LLMApi for AnthropicApi {
         let request_body = AnthropicRequest {
             model: self.model,
             system: system_msg.to_string(),
-            max_tokens: 1024,
+            max_tokens: self.model.max_output_tokens(),
             messages: msgs,
         };
 
