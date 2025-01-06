@@ -3,9 +3,12 @@ use std::{thread, time};
 use std::mem;
 
 mod llm;
+mod anthropic;
 mod terminal;
 
 use crate::llm::*;
+use crate::anthropic::{AnthropicApi, Model};
+
 use crate::terminal::*;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -28,14 +31,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
+    let anthropic_api = AnthropicApi::new(anthropic_api_key, Model::Sonnet3_5);
     let system_prompt = generate_system_prompt(task);
-
-    let secret_info = SecretInfo::new(anthropic_api_key);
-    let llm = LLM::new(secret_info, system_prompt);
+    let mut llm = LLM::new(anthropic_api, system_prompt);
 
     let terminal = Terminal::new();
 
-    if let Err(e) = run_session_loop(llm, terminal) {
+    if let Err(e) = run_session_loop(&mut llm, terminal) {
         eprintln!("Session loop terminated with error: {}", e);
         return Err(Box::new(e));
     }
@@ -43,22 +45,30 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn run_session_loop(mut llm: LLM, mut terminal: Terminal) -> Result<(), LLMError> {
+fn run_session_loop<Api: LLMApi>(llm: &mut LLM<Api>, mut terminal: Terminal) -> Result<(), LLMApiError> {
     let ps1 = ">>";
     let mut last_terminal_output = String::new();
     loop {
         // Send the last terminal output to the LLM and handle potential errors
-        let llm_resp = match prompt_llm(&mut llm, format!("{ps1}{last_terminal_output}")) {
+        let llm_resp = match llm.prompt(format!("{ps1}{last_terminal_output}")) {
             Ok(resp) => resp,
             Err(e) => {
                 eprintln!("Error communicating with LLM: {}", e);
                 // Depending on the error type, we might want to retry or exit
                 match e {
-                    LLMError::NetworkError(_) => {
+                    LLMApiError::NetworkError(_) => {
                         // For network errors, we might want to retry after a delay
                         thread::sleep(time::Duration::from_secs(1));
                         continue;
-                    }
+                    }, 
+                    LLMApiError::RateLimitExceeded => {
+                        thread::sleep(time::Duration::from_secs(1));
+                        continue;
+                    }, 
+                    LLMApiError::OverloadedError => {
+                        thread::sleep(time::Duration::from_secs(1));
+                        continue;
+                    }, 
                     _ => return Err(e), // For other errors, propagate up
                 }
             }

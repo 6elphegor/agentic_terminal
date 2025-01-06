@@ -1,68 +1,126 @@
 use serde::{Deserialize, Serialize};
+use std::fmt;
+use std::error::Error;
 
-#[derive(Debug)]
-pub struct SecretInfo {
-    anthropic_api_key: String,
+
+pub trait LLMApi {
+    fn prompt(&self, system_msg: &str, msgs: &[Message]) -> Result<String, LLMApiError>;
 }
 
-impl SecretInfo {
-    pub fn new(key: String) -> Self {
+#[derive(Debug)]
+pub enum LLMApiError {
+    NetworkError(reqwest::Error),
+    ParseError(serde_json::Error),
+    InvalidRequestError,
+    AuthenticationError,
+    PermissionError,
+    NotFoundError,
+    RequestTooLarge,
+    RateLimitExceeded,
+    ApiError,
+    OverloadedError,
+    Other,
+}
+
+// Implement From for network errors
+impl From<reqwest::Error> for LLMApiError {
+    fn from(error: reqwest::Error) -> Self {
+        Self::NetworkError(error)
+    }
+}
+
+// Implement From for JSON parsing errors
+impl From<serde_json::Error> for LLMApiError {
+    fn from(error: serde_json::Error) -> Self {
+        Self::ParseError(error)
+    }
+}
+
+
+impl fmt::Display for LLMApiError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            LLMApiError::NetworkError(err) => write!(f, "Network error: {}", err),
+            LLMApiError::ParseError(err) => write!(f, "Parse error: {}", err),
+            LLMApiError::InvalidRequestError => write!(f, "Invalid request error"),
+            LLMApiError::AuthenticationError => write!(f, "Authentication error"),
+            LLMApiError::PermissionError => write!(f, "Permission error"),
+            LLMApiError::NotFoundError => write!(f, "Resource not found"),
+            LLMApiError::RequestTooLarge => write!(f, "Request too large"),
+            LLMApiError::RateLimitExceeded => write!(f, "Rate limit exceeded"),
+            LLMApiError::ApiError => write!(f, "API error"),
+            LLMApiError::OverloadedError => write!(f, "Service overloaded"),
+            LLMApiError::Other => write!(f, "Unknown error"),
+        }
+    }
+}
+
+impl Error for LLMApiError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            LLMApiError::NetworkError(err) => Some(err),
+            LLMApiError::ParseError(err) => Some(err),
+            _ => None,
+        }
+    }
+}
+
+
+
+
+pub struct LLM<Api: LLMApi> {
+    api: Api, 
+    system_msg: String, 
+    messages: Vec<Message>, 
+}
+
+impl<Api: LLMApi> LLM<Api> {
+    pub fn new(api: Api, system_msg: String) -> Self {
         Self {
-            anthropic_api_key: key, 
+            api: api, 
+            system_msg: system_msg, 
+            messages: Vec::new(), 
+        }
+    }
+
+    pub fn prompt(&mut self, user_msg: String) -> Result<String, LLMApiError> {
+        self.messages.push(
+            Message {
+                role: Role::User, 
+                content: user_msg, 
+            }
+        );
+
+        match self.api.prompt(&self.system_msg, &self.messages) {
+            Ok(resp) => {
+                self.messages.push(
+                    Message {
+                        role: Role::Assistant, 
+                        content: resp.clone(), 
+                    }
+                );
+                Ok(resp)
+            }, 
+            Err(err) => {
+                self.messages.pop();
+                Err(err)
+            }, 
         }
     }
 }
 
-/// A single message in the conversation. Valid roles are typically "user", "assistant", etc.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct AnthropicMessage {
-    role: String,
-    content: String,
+#[derive(Debug, Clone)]
+pub struct Message {
+    pub role: Role,
+    pub content: String,
 }
 
-/// The top-level request to Anthropic’s /v1/messages endpoint.
-#[derive(Debug, Clone, Serialize)]
-struct AnthropicRequest {
-    model: String,
-    system: String,
-    max_tokens: usize,
-    messages: Vec<AnthropicMessage>,
+#[derive(Debug, Clone, Copy)]
+pub enum Role {
+    Assistant, 
+    User, 
 }
 
-/// The response shape returned by Anthropic’s /v1/messages,
-#[derive(Debug, Clone, Deserialize)]
-struct AnthropicResponse {
-    content: Option<Vec<ContentItem>>, 
-    stop_reason: Option<String>,
-    stop_sequence: Option<String>,
-}
-
-/// Each item in the `content` array typically has { "type": "text", "text": "some text" }.
-#[derive(Debug, Clone, Deserialize)]
-struct ContentItem {
-    #[serde(rename = "type")]
-    item_type: String,
-    text: String,
-}
-
-#[derive(Debug)]
-pub struct LLM {
-    secret_info: SecretInfo,
-    system_prompt: String,
-    messages: Vec<AnthropicMessage>,
-    model: String,
-}
-
-impl LLM {
-    pub fn new(secret_info: SecretInfo, system_prompt: String) -> Self {
-        LLM {
-            secret_info,
-            system_prompt,
-            messages: vec![],
-            model: "claude-3-5-sonnet-latest".to_string(),
-        }
-    }
-}
 
 pub fn generate_system_prompt(task: &str) -> String {
     format!(
@@ -79,115 +137,4 @@ When the task is completed or if you do not expect to be able to complete it, ex
 Respond ONLY with the exact command to run. Do not include any explanation or commentary.
 When you want to exit, respond with exactly 'exit'."
     )
-}
-
-
-
-
-
-/// Call Anthropic's /v1/messages endpoint.
-/// Returns the updated LLM state and the response content on success,
-/// or an error describing what went wrong.
-pub fn prompt_llm(llm: &mut LLM, user_message: String) -> Result<String, LLMError> {
-    let mut updated_messages = llm.messages.clone();
-    updated_messages.push(AnthropicMessage {
-        role: "user".to_string(),
-        content: user_message,
-    });
-
-    // Build the request body
-    let request_body = AnthropicRequest {
-        model: llm.model.clone(),
-        system: llm.system_prompt.clone(),
-        max_tokens: 1024,
-        messages: updated_messages.clone(),
-    };
-
-    // Make the API request
-    let client = reqwest::blocking::Client::new();
-    let response = client
-        .post("https://api.anthropic.com/v1/messages")
-        .header("x-api-key", &llm.secret_info.anthropic_api_key)
-        .header("anthropic-version", "2023-06-01")
-        .header("content-type", "application/json")
-        .json(&request_body)
-        .send()?;
-
-    // Check if the status code indicates success
-    if !response.status().is_success() {
-        return Err(LLMError::InvalidResponse(format!(
-            "HTTP error {}: {}", 
-            response.status(),
-            response.text().unwrap_or_else(|_| "Could not read error response".to_string())
-        )));
-    }
-
-    // Parse the response body
-    let body = response.text()?;
-    let anthropic_resp: AnthropicResponse = serde_json::from_str(&body)?;
-
-    // Extract the response content
-    let llm_resp = anthropic_resp.content
-        .ok_or(LLMError::MissingContent)?
-        .first()
-        .ok_or(LLMError::EmptyContent)?
-        .text
-        .clone();
-
-    updated_messages.push(AnthropicMessage {
-        role: "assistant".to_string(),
-        content: llm_resp.clone(),
-    });
-
-    llm.messages = updated_messages;
-
-    Ok(llm_resp)
-}
-
-use std::fmt;
-
-#[derive(Debug)]
-pub enum LLMError {
-    NetworkError(reqwest::Error),
-    ParseError(serde_json::Error),
-    EmptyContent,
-    MissingContent,
-    InvalidResponse(String),
-}
-
-// Implement std::error::Error for our custom error type
-impl std::error::Error for LLMError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            LLMError::NetworkError(e) => Some(e),
-            LLMError::ParseError(e) => Some(e),
-            _ => None,
-        }
-    }
-}
-
-// Implement Display for pretty printing
-impl fmt::Display for LLMError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            LLMError::NetworkError(e) => write!(f, "Network error: {}", e),
-            LLMError::ParseError(e) => write!(f, "Failed to parse LLM response: {}", e),
-            LLMError::EmptyContent => write!(f, "Empty content array in LLM response"),
-            LLMError::MissingContent => write!(f, "No content field in LLM response"),
-            LLMError::InvalidResponse(msg) => write!(f, "Invalid API response: {}", msg),
-        }
-    }
-}
-
-// Implement From traits for automatic conversion
-impl From<reqwest::Error> for LLMError {
-    fn from(err: reqwest::Error) -> LLMError {
-        LLMError::NetworkError(err)
-    }
-}
-
-impl From<serde_json::Error> for LLMError {
-    fn from(err: serde_json::Error) -> LLMError {
-        LLMError::ParseError(err)
-    }
 }
