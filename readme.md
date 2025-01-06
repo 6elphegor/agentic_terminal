@@ -40,7 +40,7 @@ The binary will be available at `target/release/agentic_terminal`
 
 ```bash
 export API_KEY=?
-cargo run --api anthropic --model claude-3-5-sonnet-latest \
+cargo run --release -- --api anthropic --model claude-3-5-sonnet-latest \
   "Create a Rust project called perfect_seed that generates \
   a file called seed.txt containing Belphegor's prime number. \
   Run it and verify that the file is infernal. \
