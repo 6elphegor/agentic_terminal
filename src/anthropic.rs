@@ -1,15 +1,17 @@
 use serde::{Serialize, Deserialize};
 use crate::llm::{LLMApi, LLMApiError, Message, Role};
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AnthropicApi {
-    secret_key: String, 
-    model: Model, 
+    #[serde(skip_serializing)]
+    secret_key: Option<String>,
+    model: Model,
 }
 
 impl AnthropicApi {
     pub fn new(key: String, model: Model) -> Self {
         Self {
-            secret_key: key, 
+            secret_key: Some(key), 
             model: model, 
         }
     }
@@ -149,6 +151,8 @@ impl Into<LLMApiError> for ErrorType {
 
 impl LLMApi for AnthropicApi {
     fn prompt(&self, system_msg: &str, msgs: &[Message]) -> Result<String, LLMApiError> {
+        let secret_key = self.secret_key.as_ref().ok_or(LLMApiError::AuthenticationError)?;
+
         let msgs: Vec<AnthropicMessage> = msgs.iter().map(|msg| {
             AnthropicMessage {
                 role: msg.role.into(),
@@ -166,7 +170,7 @@ impl LLMApi for AnthropicApi {
         let client = reqwest::blocking::Client::new();
         let response = client
             .post("https://api.anthropic.com/v1/messages")
-            .header("x-api-key", &self.secret_key)
+            .header("x-api-key", secret_key)
             .header("anthropic-version", "2023-06-01")
             .header("content-type", "application/json")
             .json(&request_body)

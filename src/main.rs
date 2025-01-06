@@ -5,11 +5,14 @@ use std::mem;
 mod llm;
 mod anthropic;
 mod terminal;
+mod log;
 
 use crate::llm::*;
 use crate::anthropic::{AnthropicApi, Model};
 
 use crate::terminal::*;
+
+use crate::log::save_session_log;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = env::args().collect();
@@ -39,7 +42,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     if let Err(e) = run_session_loop(&mut llm, terminal) {
         eprintln!("Session loop terminated with error: {}", e);
+        save_session_log(&llm)?;
         return Err(Box::new(e));
+    } else {
+        save_session_log(&llm)?;
     }
 
     Ok(())

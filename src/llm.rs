@@ -1,9 +1,9 @@
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::fmt;
 use std::error::Error;
 
 
-pub trait LLMApi {
+pub trait LLMApi: Serialize {
     fn prompt(&self, system_msg: &str, msgs: &[Message]) -> Result<String, LLMApiError>;
 }
 
@@ -67,7 +67,7 @@ impl Error for LLMApiError {
 
 
 
-
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LLM<Api: LLMApi> {
     api: Api, 
     system_msg: String, 
@@ -109,13 +109,13 @@ impl<Api: LLMApi> LLM<Api> {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Message {
     pub role: Role,
     pub content: String,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub enum Role {
     Assistant, 
     User, 
