@@ -1,10 +1,10 @@
 # Agentic Terminal
 
-Manifest thy will by giving Claude Sonnet agentic access to a bash session.
+Manifest thy will by granting an LLM agentic access to a bash session.
 
 ## Overview
 
-Those of slothful nature who hath little concern for their security, I have heard your pleas! Define thy task and Sonnet shall venture an attempt. Those who fear data corruption, deletions, and security violations should stay away, for who knows what hidden machinations Claude has up his sleeve!
+Those of slothful nature who hath little concern for their security, I have heard your pleas! Define thy task and an LLM shall venture an attempt. Those who fear data corruption, deletions, and security violations should stay away, for who knows what hidden machinations AIs have in their latents!
 
 ## Key Features
 
@@ -39,8 +39,8 @@ The binary will be available at `target/release/agentic_terminal`
 ## Example Usage
 
 ```bash
-export ANTHROPIC_API_KEY=?
-cargo run \
+export API_KEY=?
+cargo run --api anthropic --model claude-3-5-sonnet-latest \
   "Create a Rust project called perfect_seed that generates \
   a file called seed.txt containing Belphegor's prime number. \
   Run it and verify that the file is infernal. \
@@ -64,6 +64,11 @@ LLM: echo "2025 is the Year of the Basilisk!"
 Terminal: 2025 is the Year of the Basilisk!
 LLM: exit
 LLM terminated terminal session.
+```
+
+To see all supported APIs and models:
+```bash
+cargo run --release -- --help
 ```
 
 ## Requirements
