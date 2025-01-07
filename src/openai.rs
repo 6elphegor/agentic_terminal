@@ -1,5 +1,5 @@
 use serde::{Serialize, Deserialize};
-use crate::llm::{LLMApi, LLMApiError, Message, Role};
+use crate::llm::{LLMApi, ApiResponse, StopReason, LLMApiError, Message, Role};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OAIApi {
@@ -96,7 +96,29 @@ pub struct OAIResponse {
 pub struct Choice {
     pub index: u32,
     pub message: OAIMessage,
-    pub finish_reason: Option<String>,
+    pub finish_reason: FinishReason,
+}
+
+#[derive(Debug, Copy, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FinishReason {
+    Stop,
+    Length,
+    ContentFilter,
+    ToolCalls,
+}
+
+impl TryInto<StopReason> for FinishReason {
+    type Error = &'static str;
+
+    fn try_into(self) -> Result<StopReason, Self::Error> {
+        match self {
+            FinishReason::Stop => Ok(StopReason::EndTurn),
+            FinishReason::Length => Ok(StopReason::MaxTokens),
+            FinishReason::ContentFilter => Err("ContentFilter has no equivalent in StopReason"),
+            FinishReason::ToolCalls => Err("ToolCalls has no equivalent in StopReason"),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -130,7 +152,7 @@ impl From<reqwest::StatusCode> for LLMApiError {
 
 
 impl LLMApi for OAIApi {
-    fn prompt(&self, system_msg: &str, msgs: &[Message]) -> Result<String, LLMApiError> {
+    fn prompt(&self, system_msg: &str, msgs: &[Message]) -> Result<ApiResponse, LLMApiError> {
         let secret_key = self.secret_key.as_ref().ok_or(LLMApiError::AuthenticationError)?;
 
         // As of January 2025 
@@ -176,10 +198,21 @@ impl LLMApi for OAIApi {
 
         let body = response.text()?;
         let result: OAIResponse = serde_json::from_str(&body)?;
-        
-        result.choices
+
+        let choice = result.choices
             .first()
-            .map(|choice| choice.message.content.clone())
-            .ok_or(LLMApiError::Other)
+            .ok_or(LLMApiError::Other)?;
+
+        let resp = choice.message.content.clone();
+        let stop_reason = choice.finish_reason
+            .try_into()
+            .map_err(|_| LLMApiError::Other)?;
+
+        Ok(
+            ApiResponse {
+                resp, 
+                stop_reason, 
+            }
+        )
     }
 }

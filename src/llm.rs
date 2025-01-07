@@ -1,10 +1,24 @@
-use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use serde::{Deserialize, Serialize};
+use std::{thread, time};
 use std::fmt;
 use std::error::Error;
+use std::iter;
 
 
 pub trait LLMApi: Serialize {
-    fn prompt(&self, system_msg: &str, msgs: &[Message]) -> Result<String, LLMApiError>;
+    fn prompt(&self, system_msg: &str, msgs: &[Message]) -> Result<ApiResponse, LLMApiError>;
+}
+
+#[derive(Debug, Clone)]
+pub struct ApiResponse {
+    pub resp: String, 
+    pub stop_reason: StopReason, 
+}
+
+#[derive(Debug, Copy, Clone)]
+pub enum StopReason {
+    EndTurn, 
+    MaxTokens, 
 }
 
 #[derive(Debug)]
@@ -83,28 +97,88 @@ impl<Api: LLMApi> LLM<Api> {
         }
     }
 
-    pub fn prompt(&mut self, user_msg: String) -> Result<String, LLMApiError> {
-        self.messages.push(
-            Message {
-                role: Role::User, 
-                content: user_msg, 
-            }
-        );
+    fn prompt_partial_output(&mut self, msg: Message) -> Result<ApiResponse, LLMApiError> {
+        self.messages.push(msg);
 
         match self.api.prompt(&self.system_msg, &self.messages) {
             Ok(resp) => {
-                self.messages.push(
-                    Message {
-                        role: Role::Assistant, 
-                        content: resp.clone(), 
-                    }
-                );
                 Ok(resp)
             }, 
             Err(err) => {
                 self.messages.pop();
                 Err(err)
             }, 
+        }
+    }
+
+    pub fn prompt(&mut self, user_msg: String, timeout: time::Duration) -> Result<String, LLMApiError> {
+        let orig_msgs = self.messages.clone();
+        let mut error_start_time: Option<time::Instant> = None;
+        
+        let mut msg = Message {
+            role: Role::User,
+            content: user_msg,
+        };
+    
+        loop {
+            match self.prompt_partial_output(msg.clone()) {
+                Ok(resp) => {
+                    // Reset error timer on success
+                    error_start_time = None;
+                    
+                    match resp.stop_reason {
+                        StopReason::EndTurn => {
+                            // concatenate messages
+                            let assistant_output: String = self.messages
+                                .iter()
+                                .skip(orig_msgs.len() + 1)
+                                .map(|msg| msg.content.as_str())
+                                .chain(iter::once(resp.resp.as_str()))
+                                .collect();
+
+                            self.messages = orig_msgs;
+                            self.messages.push(
+                                Message {
+                                    role: Role::Assistant, 
+                                    content: assistant_output.clone(), 
+                                }
+                            );
+
+                            return Ok(assistant_output);
+                        },
+                        StopReason::MaxTokens => {
+                            msg = Message {
+                                role: Role::Assistant,
+                                content: resp.resp,
+                            };
+                            thread::sleep(time::Duration::from_millis(200));
+                            continue;
+                        }
+                    }
+                },
+                Err(err) => {
+                    match err {
+                        LLMApiError::RateLimitExceeded 
+                        | LLMApiError::OverloadedError => {
+                            // Start error timer if this is the first error
+                            let start_time = error_start_time.get_or_insert_with(time::Instant::now);
+                            
+                            // Check if we've exceeded timeout since first error
+                            if start_time.elapsed() >= timeout {
+                                self.messages = orig_msgs;
+                                return Err(err);
+                            }
+                            
+                            thread::sleep(time::Duration::from_secs(1));
+                            continue;
+                        },
+                        _ => {
+                            self.messages = orig_msgs;
+                            return Err(err)
+                        },
+                    }
+                }
+            }
         }
     }
 }
@@ -134,6 +208,7 @@ Also, cd command does not work, don't use it, paths must be relative to current 
 This is due to limitations of the terminal you will be interfacing with.
 When the task is completed or if you do not expect to be able to complete it, exit the terminal.
 
+Due to token output limits, sometimes a partial command is issued. In that case there will need to be multiple assistant messages in sequence to complete the entire command.
 Respond ONLY with the exact command to run. No formatted outputs, no ```bash, just raw commands. Do not invoke bash, you are already in a bash session. Do not include any explanation or commentary.
 When you want to exit, respond with exactly 'exit'."
     )

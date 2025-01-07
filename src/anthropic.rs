@@ -1,5 +1,5 @@
 use serde::{Serialize, Deserialize};
-use crate::llm::{LLMApi, LLMApiError, Message, Role};
+use crate::llm::{self, LLMApi, ApiResponse, LLMApiError, Message, Role};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AnthropicApi {
@@ -97,7 +97,7 @@ pub struct AnthropicResponse {
     pub id: String,
     pub model: String,
     pub role: AnthropicRole,
-    pub stop_reason: Option<String>,
+    pub stop_reason: StopReason,
     pub stop_sequence: Option<String>,
     #[serde(rename = "type")]
     pub message_type: String,
@@ -109,6 +109,28 @@ pub struct ContentItem {
     #[serde(rename = "type")]
     pub item_type: String,
     pub text: String,
+}
+
+#[derive(Debug, Copy, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StopReason {
+    EndTurn,
+    MaxTokens,
+    StopSequence,
+    ToolUse,
+}
+
+impl TryInto<llm::StopReason> for StopReason {
+    type Error = &'static str;
+
+    fn try_into(self) -> Result<llm::StopReason, Self::Error> {
+        match self {
+            StopReason::EndTurn => Ok(llm::StopReason::EndTurn),
+            StopReason::MaxTokens => Ok(llm::StopReason::MaxTokens),
+            StopReason::StopSequence => Err("StopSequence has no equivalent in StopReason"),
+            StopReason::ToolUse => Err("ToolUse has no equivalent in StopReason"),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -160,7 +182,7 @@ impl Into<LLMApiError> for ErrorType {
 }
 
 impl LLMApi for AnthropicApi {
-    fn prompt(&self, system_msg: &str, msgs: &[Message]) -> Result<String, LLMApiError> {
+    fn prompt(&self, system_msg: &str, msgs: &[Message]) -> Result<ApiResponse, LLMApiError> {
         let secret_key = self.secret_key.as_ref().ok_or(LLMApiError::AuthenticationError)?;
 
         let msgs: Vec<AnthropicMessage> = msgs.iter().map(|msg| {
@@ -173,7 +195,7 @@ impl LLMApi for AnthropicApi {
         let request_body = AnthropicRequest {
             model: self.model,
             system: system_msg.to_string(),
-            max_tokens: self.model.max_output_tokens(),
+            max_tokens: self.model.max_output_tokens(), 
             messages: msgs,
         };
 
@@ -191,10 +213,21 @@ impl LLMApi for AnthropicApi {
 
         match result {
             AnthropicResult::Success(response) => {
-                response.content
+                let resp = response.content
                     .first()
                     .map(|item| item.text.clone())
-                    .ok_or(LLMApiError::Other)
+                    .unwrap_or(String::new());
+
+                let stop_reason = response.stop_reason
+                    .try_into()
+                    .map_err(|_| LLMApiError::Other)?;
+
+                Ok(
+                    ApiResponse {
+                        resp, 
+                        stop_reason, 
+                    }
+                )
             },
             AnthropicResult::Error(err) => Err(err.error.error_type.into())
         }

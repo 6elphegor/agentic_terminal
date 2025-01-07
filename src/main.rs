@@ -114,30 +114,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Prepare the system prompt
     let system_prompt = generate_system_prompt(&cli.task);
 
+    let api_key = env::var("API_KEY")
+        .map_err(|_| "Please set the environment variable API_KEY")?;
+
     // Build the appropriate LLMKind variant
     let mut llm_kind = match cli.api {
         ApiChoice::Anthropic => {
-            // Retrieve Anthropic API key
-            let anthropic_api_key = env::var("API_KEY")
-                .map_err(|_| "Please set the environment variable API_KEY")?;
-
             // Convert model choice to Anthropic model
             let chosen_model = model_choice.to_anthropic_model()
                 .ok_or_else(|| format!("Invalid Anthropic model: {:?}", model_choice))?;
 
-            let anthropic_api = AnthropicApi::new(anthropic_api_key, chosen_model);
+            let anthropic_api = AnthropicApi::new(api_key, chosen_model);
             LLMKind::AnthropicLLM(LLM::new(anthropic_api, system_prompt))
         }
         ApiChoice::OpenAI => {
-            // Retrieve OpenAI API key
-            let oai_api_key = env::var("API_KEY")
-                .map_err(|_| "Please set the environment variable API_KEY")?;
-
             // Convert model choice to OpenAI model
             let chosen_model = model_choice.to_openai_model()
                 .ok_or_else(|| format!("Invalid OpenAI model: {:?}", model_choice))?;
 
-            let oai_api = OAIApi::new(oai_api_key, chosen_model);
+            let oai_api = OAIApi::new(api_key, chosen_model);
             LLMKind::OpenAILLM(LLM::new(oai_api, system_prompt))
         }
     };
@@ -188,22 +183,15 @@ fn run_session_loop_generic<Api: LLMApi>(
     let ps1 = ">>";
     let mut last_terminal_output = String::new();
 
+    let timeout = time::Duration::from_secs(10);
+
     loop {
         // Send the last terminal output to the LLM
-        let llm_resp = match llm.prompt(format!("{ps1}{last_terminal_output}")) {
+        let llm_resp = match llm.prompt(format!("{ps1}{last_terminal_output}"), timeout) {
             Ok(resp) => resp,
             Err(e) => {
                 eprintln!("Error communicating with LLM: {}", e);
-                match e {
-                    LLMApiError::NetworkError(_) 
-                    | LLMApiError::RateLimitExceeded
-                    | LLMApiError::OverloadedError => {
-                        // Sleep briefly and retry certain errors
-                        thread::sleep(time::Duration::from_secs(1));
-                        continue;
-                    }
-                    _ => return Err(e), 
-                }
+                return Err(e);
             }
         };
 
