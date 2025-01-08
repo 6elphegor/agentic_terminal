@@ -1,4 +1,4 @@
-use serde::{Serialize, Deserialize};
+use serde::{Serialize, Serializer, ser::SerializeMap, Deserialize};
 use crate::llm::{self, LLMApi, ApiResponse, LLMApiError, Message, Role};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -45,10 +45,121 @@ struct AnthropicRequest {
     messages: Vec<AnthropicMessage>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 struct AnthropicMessage {
     role: AnthropicRole,
-    content: String,
+    content: Content,
+}
+
+impl From<llm::Message> for AnthropicMessage {
+    fn from(msg: llm::Message) -> Self {
+        Self {
+            role: msg.role.into(),
+            content: msg.content.into(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(untagged)]
+pub enum Content {
+    PureText(String), 
+    Mixed(Vec<ContentElem>), 
+}
+
+impl From<llm::Content> for Content {
+    fn from(content: llm::Content) -> Self {
+        match content {
+            llm::Content::Text(text) => Content::PureText(text),
+            llm::Content::Image(_) => Content::Mixed(vec![content.into()]),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum ContentElem {
+    Text(String), 
+    Image(Image), 
+}
+
+impl Serialize for ContentElem {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut map = serializer.serialize_map(Some(2))?;
+        match self {
+            ContentElem::Text(txt) => {
+                map.serialize_entry("type", "text")?;
+                map.serialize_entry("text", txt)?;
+            }
+            ContentElem::Image(img) => {
+                map.serialize_entry("type", "image")?;
+                map.serialize_entry("source", img)?;
+            }
+        }
+        map.end()
+    }
+}
+
+impl From<llm::Content> for ContentElem {
+    fn from(content: llm::Content) -> Self {
+        match content {
+            llm::Content::Text(text) => ContentElem::Text(text),
+            llm::Content::Image(image) => ContentElem::Image(image.into()),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct Image {
+    media_type: MediaType, 
+    data: String, 
+}
+
+impl From<llm::Image> for Image {
+    fn from(image: llm::Image) -> Self {
+        Self {
+            media_type: image.image_type.into(),
+            data: image.data,
+        }
+    }
+}
+
+impl Serialize for Image {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut map = serializer.serialize_map(Some(3))?;
+        map.serialize_entry("type", "base64")?;
+        map.serialize_entry("media_type", &self.media_type)?;
+        map.serialize_entry("data", &self.data)?;
+        map.end()
+    }
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Serialize, Deserialize)]
+pub enum MediaType {
+    #[serde(rename = "image/jpeg")]
+    Jpeg,
+    #[serde(rename = "image/png")] 
+    Png,
+    #[serde(rename = "image/gif")]
+    Gif,
+    #[serde(rename = "image/webp")]
+    Webp,
+}
+
+impl From<llm::ImageType> for MediaType {
+    fn from(image_type: llm::ImageType) -> Self {
+        match image_type {
+            llm::ImageType::Jpeg => MediaType::Jpeg,
+            llm::ImageType::Png => MediaType::Png,
+            llm::ImageType::Gif => MediaType::Gif,
+            llm::ImageType::Webp => MediaType::Webp,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -111,7 +222,7 @@ pub struct ContentItem {
     pub text: String,
 }
 
-#[derive(Debug, Copy, Clone, Serialize, Deserialize)]
+#[derive(Debug, Copy, Clone, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum StopReason {
     EndTurn,
@@ -139,21 +250,21 @@ pub struct UsageInfo {
     pub output_tokens: u32,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct ErrorResponse {
     #[serde(rename = "type")]
     pub response_type: String,
     pub error: AnthropicError,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct AnthropicError {
     #[serde(rename = "type")]
     pub error_type: ErrorType,
     pub message: String,
 }
 
-#[derive(Debug, Clone, Copy, Deserialize, Serialize)]
+#[derive(Debug, Clone, Copy, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ErrorType {
     InvalidRequestError,
@@ -185,12 +296,7 @@ impl LLMApi for AnthropicApi {
     fn prompt(&self, system_msg: &str, msgs: &[Message]) -> Result<ApiResponse, LLMApiError> {
         let secret_key = self.secret_key.as_ref().ok_or(LLMApiError::AuthenticationError)?;
 
-        let msgs: Vec<AnthropicMessage> = msgs.iter().map(|msg| {
-            AnthropicMessage {
-                role: msg.role.into(),
-                content: msg.content.clone(),
-            }
-        }).collect();
+        let msgs: Vec<AnthropicMessage> = msgs.iter().map(|msg| msg.clone().into()).collect();
 
         let request_body = AnthropicRequest {
             model: self.model,

@@ -1,5 +1,5 @@
-use serde::{Serialize, Deserialize};
-use crate::llm::{LLMApi, ApiResponse, StopReason, LLMApiError, Message, Role};
+use serde::{Serialize, Serializer, ser::SerializeMap, Deserialize};
+use crate::llm::{self, LLMApi, ApiResponse, StopReason, LLMApiError, Message, Role};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OAIApi {
@@ -50,10 +50,136 @@ struct OAIRequest {
     reasoning_effort: Option<ReasoningEffort>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 struct OAIMessage {
     role: OAIRole,
-    content: String,
+    content: Content,
+}
+
+impl From<llm::Message> for OAIMessage {
+    fn from(msg: llm::Message) -> Self {
+        Self {
+            role: msg.role.into(),
+            content: msg.content.into(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(untagged)]
+pub enum Content {
+    PureText(String),
+    Mixed(Vec<ContentElem>), 
+}
+
+impl From<llm::Content> for Content {
+    fn from(content: llm::Content) -> Self {
+        match content {
+            llm::Content::Text(text) => Content::PureText(text),
+            llm::Content::Image(_) => Content::Mixed(vec![content.into()]),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum ContentElem {
+    Text(String), 
+    Image(Image), 
+}
+
+impl From<llm::Content> for ContentElem {
+    fn from(content: llm::Content) -> Self {
+        match content {
+            llm::Content::Text(text) => ContentElem::Text(text),
+            llm::Content::Image(image) => ContentElem::Image(image.into()),
+        }
+    }
+}
+
+impl Serialize for ContentElem {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut map = serializer.serialize_map(Some(2))?;
+        match self {
+            ContentElem::Text(txt) => {
+                map.serialize_entry("type", "text")?;
+                map.serialize_entry("text", txt)?;
+            }
+            ContentElem::Image(img) => {
+                map.serialize_entry("type", "image_url")?;
+                map.serialize_entry("image_url", img)?;
+            }
+        }
+        map.end()
+    }
+}
+
+
+
+
+
+
+#[derive(Debug, Clone)]
+pub struct Image {
+    media_type: MediaType, 
+    data: String, 
+}
+
+impl From<llm::Image> for Image {
+    fn from(image: llm::Image) -> Self {
+        Self {
+            media_type: image.image_type.into(),
+            data: image.data,
+        }
+    }
+}
+
+impl Serialize for Image {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let data_url = format!("data:{};base64,{}", self.media_type, self.data);
+        let mut map = serializer.serialize_map(Some(1))?;
+        map.serialize_entry("url", &data_url)?;
+        map.end()
+    }
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Serialize, Deserialize)]
+pub enum MediaType {
+    #[serde(rename = "image/jpeg")]
+    Jpeg,
+    #[serde(rename = "image/png")] 
+    Png,
+    #[serde(rename = "image/gif")]
+    Gif,
+    #[serde(rename = "image/webp")]
+    Webp,
+}
+
+impl From<llm::ImageType> for MediaType {
+    fn from(image_type: llm::ImageType) -> Self {
+        match image_type {
+            llm::ImageType::Jpeg => MediaType::Jpeg,
+            llm::ImageType::Png => MediaType::Png,
+            llm::ImageType::Gif => MediaType::Gif,
+            llm::ImageType::Webp => MediaType::Webp,
+        }
+    }
+}
+
+impl std::fmt::Display for MediaType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            MediaType::Jpeg => write!(f, "image/jpeg"),
+            MediaType::Png => write!(f, "image/png"),
+            MediaType::Gif => write!(f, "image/gif"),
+            MediaType::Webp => write!(f, "image/webp"),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -64,21 +190,21 @@ pub enum OAIRole {
     Developer,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+impl From<llm::Role> for OAIRole {
+    fn from(role: llm::Role) -> Self {
+        match role {
+            llm::Role::Assistant => OAIRole::Assistant,
+            llm::Role::User => OAIRole::User,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ReasoningEffort {
     Low,
     Medium,
     High,
-}
-
-impl From<Role> for OAIRole {
-    fn from(role: Role) -> Self {
-        match role {
-            Role::Assistant => OAIRole::Assistant,
-            Role::User => OAIRole::User,
-        }
-    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -95,11 +221,17 @@ pub struct OAIResponse {
 #[derive(Debug, Clone, Deserialize)]
 pub struct Choice {
     pub index: u32,
-    pub message: OAIMessage,
+    pub message: OAIMessageResp,
     pub finish_reason: FinishReason,
 }
 
-#[derive(Debug, Copy, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
+struct OAIMessageResp {
+    role: OAIRole,
+    content: String,
+}
+
+#[derive(Debug, Copy, Clone, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FinishReason {
     Stop,
@@ -161,20 +293,17 @@ impl LLMApi for OAIApi {
         let system_msg = match self.model {
             Model::O1 | Model::O1Mini | Model::O1Preview => OAIMessage {
                 role: OAIRole::User,
-                content: system_msg.to_string(),
+                content: Content::PureText(system_msg.to_string()),
             }, 
             _ => OAIMessage {
                 role: OAIRole::Developer,
-                content: system_msg.to_string(),
+                content: Content::PureText(system_msg.to_string()),
             }, 
         };
 
         let mut messages = vec![system_msg];
 
-        messages.extend(msgs.iter().map(|msg| OAIMessage {
-            role: msg.role.into(),
-            content: msg.content.clone(),
-        }));
+        messages.extend(msgs.iter().map(|msg| msg.clone().into()));
 
         let request_body = OAIRequest {
             model: self.model,

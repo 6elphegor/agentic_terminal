@@ -55,8 +55,7 @@ impl Terminal {
 }
 
 pub fn prompt_terminal(mut terminal: Terminal, command: &str) -> Option<(Terminal, String)> {
-    let command = command.trim();
-    if command == "exit" {
+    if command.trim() == "exit" {
         return None;
     }
 

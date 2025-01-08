@@ -103,6 +103,25 @@ impl LLMKind {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /*let api_key = env::var("API_KEY")
+        .map_err(|_| "Please set the environment variable API_KEY")?;
+    let anthropic_api = OAIApi::new(api_key, openai::Model::GPT4O);
+    let mut llm = LLM::new(anthropic_api, "describe the image using echo".to_string());
+
+    let resp = llm.prompt(Content::Image(Image::from_file("img.png").unwrap()), time::Duration::from_secs(10)).unwrap();
+    println!("Response: {:?}", resp);
+    return Ok(());*/
+
+
+
+
+
+
+
+
+
+
+
     let cli = Cli::parse();
 
     // Get the appropriate model based on API choice
@@ -181,13 +200,23 @@ fn run_session_loop_generic<Api: LLMApi>(
     mut terminal: Terminal
 ) -> Result<(), LLMApiError> {
     let ps1 = ">>";
-    let mut last_terminal_output = String::new();
+    let mut last_content_output = None;
 
     let timeout = time::Duration::from_secs(10);
 
     loop {
-        // Send the last terminal output to the LLM
-        let llm_resp = match llm.prompt(format!("{ps1}{last_terminal_output}"), timeout) {
+        let content_with_psi = match last_content_output.take() {
+            Some(out) => {
+                match out {
+                    Content::Text(txt) => Content::Text(format!("{ps1}{txt}")), 
+                    Content::Image(img) => Content::Image(img), 
+                }
+            }, 
+            None => Content::Text(format!("{ps1}")), 
+        };
+
+        // Send the last content output to the LLM
+        let llm_resp = match llm.prompt(content_with_psi, timeout) {
             Ok(resp) => resp,
             Err(e) => {
                 eprintln!("Error communicating with LLM: {}", e);
@@ -196,22 +225,42 @@ fn run_session_loop_generic<Api: LLMApi>(
         };
 
         // Show the LLM's command
-        println!("LLM: {}", llm_resp.trim());
+        println!("LLM: {}", llm_resp.to_string().trim());
 
-        // Execute in the hidden terminal
-        match prompt_terminal(terminal, &llm_resp) {
-            Some((new_terminal, output)) => {
-                terminal = new_terminal;
-                last_terminal_output = output;
-                // Show the terminal output
-                println!("Terminal: {}", last_terminal_output.trim_end());
-            }
-            None => {
-                // If None, LLM typed "exit"
-                println!("LLM terminated terminal session.");
+        match llm_resp {
+            LLMResponse::Command(command) => {
+                // Execute in the hidden terminal
+                match prompt_terminal(terminal, &command) {
+                    Some((new_terminal, output)) => {
+                        // Show the terminal output
+                        println!("Terminal: {}", output.trim_end());
+
+                        terminal = new_terminal;
+                        last_content_output = Some(Content::Text(output));
+                    }
+                    None => {
+                        // If None, LLM typed "exit"
+                        println!("LLM terminated terminal session.");
+                        return Ok(());
+                    }
+                }
+            }, 
+            LLMResponse::LLMSee(img_path) => {
+                let content = match Image::from_file(&img_path) {
+                    Ok(img) => Content::Image(img), 
+                    Err(e) => Content::Text(e.to_string()), 
+                };
+
+                last_content_output = Some(content);
+                println!("Terminal: viewing image at {img_path}");
+            }, 
+            LLMResponse::Exit => {
+                println!("Terminal session terminated.");
                 return Ok(());
-            }
+            }, 
         }
+
+        
 
         // Add a small delay between iterations
         thread::sleep(time::Duration::from_millis(200));

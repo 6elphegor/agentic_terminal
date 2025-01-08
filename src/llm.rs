@@ -88,6 +88,33 @@ pub struct LLM<Api: LLMApi> {
     messages: Vec<Message>, 
 }
 
+#[derive(Debug, Clone)]
+pub enum LLMResponse {
+    Command(String),
+    LLMSee(String),
+    Exit,
+}
+
+impl LLMResponse {
+    pub fn from_str(s: &str) -> Self {
+        if s.trim() == "exit" {
+            Self::Exit
+        } else if let Some(path) = s.strip_prefix("llmsee ") {
+            Self::LLMSee(path.to_string())
+        } else {
+            Self::Command(s.to_string())
+        }
+    }
+
+    pub fn to_string(&self) -> String {
+        match self {
+            LLMResponse::Command(cmd) => cmd.clone(),
+            LLMResponse::LLMSee(path) => format!("llmsee {}", path),
+            LLMResponse::Exit => "exit".to_string(),
+        }
+    }
+}
+
 impl<Api: LLMApi> LLM<Api> {
     pub fn new(api: Api, system_msg: String) -> Self {
         Self {
@@ -111,13 +138,13 @@ impl<Api: LLMApi> LLM<Api> {
         }
     }
 
-    pub fn prompt(&mut self, user_msg: String, timeout: time::Duration) -> Result<String, LLMApiError> {
+    pub fn prompt(&mut self, user_content: Content, timeout: time::Duration) -> Result<LLMResponse, LLMApiError> {
         let orig_msgs = self.messages.clone();
         let mut error_start_time: Option<time::Instant> = None;
         
         let mut msg = Message {
             role: Role::User,
-            content: user_msg,
+            content: user_content,
         };
     
         loop {
@@ -132,7 +159,7 @@ impl<Api: LLMApi> LLM<Api> {
                             let assistant_output: String = self.messages
                                 .iter()
                                 .skip(orig_msgs.len() + 1)
-                                .map(|msg| msg.content.as_str())
+                                .map(|msg| <&str>::try_from(&msg.content).unwrap())
                                 .chain(iter::once(resp.resp.as_str()))
                                 .collect();
 
@@ -140,16 +167,16 @@ impl<Api: LLMApi> LLM<Api> {
                             self.messages.push(
                                 Message {
                                     role: Role::Assistant, 
-                                    content: assistant_output.clone(), 
+                                    content: assistant_output.clone().into(), 
                                 }
                             );
 
-                            return Ok(assistant_output);
+                            return Ok(LLMResponse::from_str(assistant_output.as_str()));
                         },
                         StopReason::MaxTokens => {
                             msg = Message {
                                 role: Role::Assistant,
-                                content: resp.resp,
+                                content: resp.resp.into(),
                             };
                             thread::sleep(time::Duration::from_millis(200));
                             continue;
@@ -186,7 +213,7 @@ impl<Api: LLMApi> LLM<Api> {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Message {
     pub role: Role,
-    pub content: String,
+    pub content: Content,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -194,6 +221,162 @@ pub enum Role {
     Assistant, 
     User, 
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum Content {
+    Text(String), 
+    Image(Image), 
+}
+
+impl From<String> for Content {
+    fn from(text: String) -> Self {
+        Content::Text(text)
+    }
+}
+
+impl From<&str> for Content {
+    fn from(text: &str) -> Self {
+        Content::Text(text.to_string())
+    }
+}
+
+impl From<Image> for Content {
+    fn from(image: Image) -> Self {
+        Content::Image(image)
+    }
+}
+
+impl<'a> TryFrom<&'a Content> for &'a str {
+    type Error = &'static str;
+
+    fn try_from(content: &'a Content) -> Result<Self, Self::Error> {
+        match content {
+            Content::Text(text) => Ok(text.as_str()),
+            Content::Image(_) => Err("Cannot convert Image content to &str"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Image {
+    pub image_type: ImageType, 
+    #[serde(skip)]
+    pub data: String, 
+}
+
+#[derive(Debug, Copy, Clone, Serialize, Deserialize)]
+pub enum ImageType {
+    Jpeg,
+    Png,
+    Gif,
+    Webp,
+}
+
+
+
+
+
+
+
+
+
+
+
+
+use std::path::Path;
+use std::fs::File;
+use std::io::{self, Read, BufReader};
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
+
+#[derive(Debug)]
+pub enum ImageLoadError {
+    FileError(std::io::Error),
+    UnsupportedExtension,
+    NoExtension,
+}
+
+impl fmt::Display for ImageLoadError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::FileError(e) => write!(f, "Failed to read file: {}", e),
+            Self::UnsupportedExtension => write!(f, "Unsupported image extension"),
+            Self::NoExtension => write!(f, "File has no extension"),
+        }
+    }
+}
+
+impl Error for ImageLoadError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::FileError(e) => Some(e),
+            _ => None,
+        }
+    }
+}
+
+impl From<std::io::Error> for ImageLoadError {
+    fn from(err: std::io::Error) -> Self {
+        Self::FileError(err)
+    }
+}
+
+impl ImageType {
+    pub fn extension(&self) -> &'static str {
+        match self {
+            ImageType::Jpeg => "jpg",
+            ImageType::Png => "png",
+            ImageType::Gif => "gif",
+            ImageType::Webp => "webp",
+        }
+    }
+    
+    fn from_extension(ext: &str) -> Option<Self> {
+        match ext.to_lowercase().as_str() {
+            "jpg" | "jpeg" => Some(Self::Jpeg),
+            "png" => Some(Self::Png),
+            "gif" => Some(Self::Gif),
+            "webp" => Some(Self::Webp),
+            _ => None,
+        }
+    }
+}
+
+impl Image {
+    pub fn from_file<P: AsRef<Path>>(path: P) -> Result<Self, ImageLoadError> {
+        let path = path.as_ref();
+        
+        // Get image type from extension
+        let image_type = path.extension()
+            .ok_or(ImageLoadError::NoExtension)?
+            .to_str()
+            .and_then(ImageType::from_extension)
+            .ok_or(ImageLoadError::UnsupportedExtension)?;
+        
+        // Read file with buffered reader
+        let file = File::open(path)?;
+        let mut reader = BufReader::new(file);
+        let mut buffer = Vec::new();
+        reader.read_to_end(&mut buffer)?;
+        
+        // Convert to base64
+        let data = BASE64.encode(&buffer);
+        
+        Ok(Image {
+            image_type,
+            data,
+        })
+    }
+}
+
+
+
+
+
+
+
+
+
+
 
 
 pub fn generate_system_prompt(task: &str) -> String {
@@ -207,6 +390,9 @@ Only use terminal programs that just return an output.
 Also, cd command does not work, don't use it, paths must be relative to current directory or absolute.
 This is due to limitations of the terminal you will be interfacing with.
 When the task is completed or if you do not expect to be able to complete it, exit the terminal.
+
+There is a special command, llmsee img_path, that lets you see an image, no other command work for viewing images.
+Everything you output must be a single line terminal command. If you need to think or just say something, use the colon command, example : \"my thoughts must be in quotes\".
 
 Due to token output limits, sometimes a partial command is issued. In that case there will need to be multiple assistant messages in sequence to complete the entire command.
 Respond ONLY with the exact command to run. No formatted outputs, no ```bash, just raw commands. Do not invoke bash, you are already in a bash session. Do not include any explanation or commentary.
