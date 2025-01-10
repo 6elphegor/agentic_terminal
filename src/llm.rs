@@ -96,7 +96,7 @@ pub struct LLM<Api: LLMApi> {
     messages: Vec<MaskableMessage>, 
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum LLMResponse {
     Command(String),
     LLMSee(String),
@@ -104,7 +104,7 @@ pub enum LLMResponse {
     Exit,
 }
 
-impl LLMResponse {
+/*impl LLMResponse {
     pub fn from_str(s: &str) -> Self {
         if s.trim() == "exit" {
             Self::Exit
@@ -129,7 +129,7 @@ impl LLMResponse {
             LLMResponse::Exit => "exit".to_string(),
         }
     }
-}
+}*/
 
 impl<Api: LLMApi> LLM<Api> {
     pub fn new(api: Api, system_msg: String) -> Self {
@@ -179,9 +179,7 @@ impl<Api: LLMApi> LLM<Api> {
         self.messages[id].is_masked = true;
     }
 
-    fn prompt_partial_output(&mut self, msg: Message) -> Result<ApiResponse, LLMApiError> {
-        self.add_msg(msg);
-
+    fn prompt_partial_output(&mut self) -> Result<ApiResponse, LLMApiError> {
         match self.api.prompt(&self.system_msg, self.messages.iter().filter_map(|msg| msg.to_message_with_id())) {
             Ok(resp) => {
                 Ok(resp)
@@ -193,46 +191,61 @@ impl<Api: LLMApi> LLM<Api> {
         }
     }
 
-    pub fn prompt(&mut self, user_content: Content, timeout: time::Duration) -> Result<(LLMResponse, Usage), LLMApiError> {
-        let num_orig_msgs = self.messages.len();
+    pub fn prompt(&mut self, timeout: time::Duration) -> Result<(Result<LLMResponse, serde_json::Error>, Usage), LLMApiError> {
         let mut error_start_time: Option<time::Instant> = None;
+
+        if self.messages.is_empty() {
+            self.add_msg(
+                Message {
+                    role: Role::User,
+                    content: "".into(),
+                }
+            );
+        }
+
+        let num_orig_msgs = self.messages.len();
         
-        let mut msg = Message {
-            role: Role::User,
-            content: user_content,
-        };
-    
         loop {
-            match self.prompt_partial_output(msg.clone()) {
+            match self.prompt_partial_output() {
                 Ok(resp) => {
                     // Reset error timer on success
                     error_start_time = None;
                     
                     match resp.stop_reason {
                         StopReason::EndTurn => {
-                            // concatenate messages
-                            let assistant_output: String = self.messages
-                                .iter()
-                                .skip(num_orig_msgs + 1)
-                                .map(|msg| <String>::try_from(&msg.msg.content).unwrap())
-                                .chain(iter::once(resp.resp.clone()))
-                                .collect();
+                            if self.messages.len() == num_orig_msgs {
+                                self.add_msg(
+                                    Message {
+                                        role: Role::Assistant,
+                                        content: resp.resp.into(),
+                                    }
+                                );
+                            } else {
+                                self.messages
+                                    .last_mut()
+                                    .unwrap()
+                                    .extend_with_content(resp.resp.into());
+                            }
 
-                            self.messages.truncate(num_orig_msgs + 1);
-                            self.add_msg(
-                                Message {
-                                    role: Role::Assistant, 
-                                    content: assistant_output.clone().into(), 
-                                }
-                            );
+                            let output_string = <String>::try_from(&self.messages.last().unwrap().msg.content).unwrap();
 
-                            return Ok( (LLMResponse::from_str(assistant_output.as_str()), resp.usage));
+                            return Ok( (serde_json::from_str(&output_string), resp.usage) );
                         },
                         StopReason::MaxTokens => {
-                            msg = Message {
-                                role: Role::Assistant,
-                                content: resp.resp.into(),
-                            };
+                            if self.messages.len() == num_orig_msgs {
+                                self.add_msg(
+                                    Message {
+                                        role: Role::Assistant,
+                                        content: resp.resp.into(),
+                                    }
+                                );
+                            } else {
+                                self.messages
+                                    .last_mut()
+                                    .unwrap()
+                                    .extend_with_content(resp.resp.into());
+                            }
+                            
                             thread::sleep(time::Duration::from_millis(200));
                             continue;
                         }
@@ -273,6 +286,10 @@ pub struct MaskableMessage {
 }
 
 impl MaskableMessage {
+    pub fn extend_with_content(&mut self, content: Content) {
+        self.msg.extend_with_content(content);
+    }
+
     pub fn get_message(&self) -> &Message {
         &self.msg
     }
@@ -315,6 +332,12 @@ pub struct Message {
     pub content: Content,
 }
 
+impl Message {
+    pub fn extend_with_content(&mut self, content: Content) {
+        self.content.extend(content);
+    }
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub enum Role {
     Assistant, 
@@ -335,6 +358,28 @@ impl Content {
                                     .iter()
                                     .map(|c| c.to_string())
                                     .collect(), 
+        }
+    }
+
+    pub fn extend(&mut self, other: Content) {
+        match (&*self, other) {
+            (Content::Single(c), Content::Single(other_c)) => {
+                *self = Content::Multiple(vec![c.clone(), other_c]);
+            }
+            (Content::Single(c), Content::Multiple(mut other_cs)) => {
+                other_cs.insert(0, c.clone());
+                *self = Content::Multiple(other_cs);
+            }
+            (Content::Multiple(_), Content::Single(other_c)) => {
+                if let Content::Multiple(cs) = self {
+                    cs.push(other_c);
+                }
+            }
+            (Content::Multiple(_), Content::Multiple(other_cs)) => {
+                if let Content::Multiple(cs) = self {
+                    cs.extend(other_cs);
+                }
+            }
         }
     }
 }
@@ -553,11 +598,18 @@ impl Image {
 
 
 
-
-
-
+fn output_examples() -> [LLMResponse; 4] {
+    [
+        LLMResponse::Command("echo \"hello\"".to_string()),
+        LLMResponse::LLMSee("img.png".to_string()),
+        LLMResponse::MaskContent(42),
+        LLMResponse::Exit,
+    ]
+}
 
 pub fn generate_system_prompt(task: &str) -> String {
+    let output_exps = serde_json::to_string(&output_examples()).unwrap();
+
     format!(
         "You are in a bash session and will interact directly with a terminal to complete the task: {task}
 You are not permitted to modify any files or folders you did not create, but you may read any file \
@@ -570,22 +622,19 @@ This is due to limitations of the terminal you will be interfacing with.
 When the task is completed or if you do not expect to be able to complete it, exit the terminal.
 
 Each previous message will have id>>, where id is the integer identifier.
-Do not prepend id>> to your outputs, it is implicit.
+NEVER output id>>. It will be added automatically by the terminal when your output is received.
+For example, DO NOT output 34>> \"Exit\", rather than \"Exit\"
 
-Special Commands: Note special commands cannot be used with normal commands and only one can be called at a time.
-For example this are invalid: ls \n lmsee img.png
-this is also invalid: lmsee img.png \n maskcontent 1
-but this is valid: lmsee img.png
+The output format is json. Only one can be output. Here is an array of examples:
+{output_exps}
 
-
+Special Commands: 
 llmsee img_path, that lets you see an image, no other command work for viewing images.
 maskcontent id, masks the content with the specified id which frees space in the context window, use for content that takes up significant space (like documents/codefiles/etc) and is no longer expected to be needed.
 Be especially aggressive with this for images as they take up significant context, often only a single image is need in the entire context at a time.
 
 Everything you output must be a single line terminal command. If you need to think or just say something, use the colon command, example : \"my thoughts must be in quotes\".
 
-Due to token output limits, sometimes a partial command is issued. In that case there will need to be multiple assistant messages in sequence to complete the entire command.
-Respond ONLY with the exact command to run. No formatted outputs, no ```bash, just raw commands. Do not invoke bash, you are already in a bash session. Do not include any explanation or commentary.
-When you want to exit, respond with exactly 'exit'."
+Due to token output limits, sometimes a partial command is issued. In that case there will need to be multiple assistant messages in sequence to complete the entire command."
     )
 }

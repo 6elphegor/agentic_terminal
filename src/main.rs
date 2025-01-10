@@ -195,15 +195,13 @@ fn run_session_loop_generic<Api: LLMApi>(
     llm: &mut LLM<Api>,
     mut terminal: Terminal
 ) -> Result<(), LLMApiError> {
-    let mut last_content_output: Content = "".into();
-
     let timeout = time::Duration::from_secs(10);
 
     let mut n_msgs_printed = 0;
 
     loop {
         // Send the last content output to the LLM
-        let (llm_resp, usage) = match llm.prompt(last_content_output, timeout) {
+        let (llm_resp, usage) = match llm.prompt(timeout) {
             Ok(resp) => resp,
             Err(e) => {
                 eprintln!("Error communicating with LLM: {}", e);
@@ -238,37 +236,64 @@ fn run_session_loop_generic<Api: LLMApi>(
         println!("LLM: {}", last_response_msg.to_message_with_id_no_mask().content.to_string());*/
 
         match llm_resp {
-            LLMResponse::Command(command) => {
-                // Execute in the hidden terminal
-                match prompt_terminal(terminal, &command) {
-                    Some((new_terminal, output)) => {
-                        terminal = new_terminal;
-                        last_content_output = output.into();
-                    }
-                    None => {
-                        // If None, LLM typed "exit"
-                        println!("LLM terminated terminal session.");
+            Ok(llm_resp) => {
+                match llm_resp {
+                    LLMResponse::Command(command) => {
+                        // Execute in the hidden terminal
+                        match prompt_terminal(terminal, &command) {
+                            Some((new_terminal, output)) => {
+                                terminal = new_terminal;
+                                llm.add_msg(
+                                    Message {
+                                        role: Role::User, 
+                                        content: output.into(), 
+                                    }
+                                );
+                            }
+                            None => {
+                                // If None, LLM typed "exit"
+                                println!("LLM terminated terminal session.");
+                                return Ok(());
+                            }
+                        }
+                    }, 
+                    LLMResponse::LLMSee(img_path) => {
+                        let content = match Image::from_file(&img_path) {
+                            Ok(img) => img.into(), 
+                            Err(e) => e.to_string().into(), 
+                        };
+        
+                        llm.add_msg(
+                            Message {
+                                role: Role::User, 
+                                content: content, 
+                            }
+                        );
+                    }, 
+                    LLMResponse::MaskContent(id) => {
+                        llm.mask_message(id);
+                        llm.add_msg(
+                            Message {
+                                role: Role::User, 
+                                content: format!("message {id} is masked").into(), 
+                            }
+                        );
+                    }, 
+                    LLMResponse::Exit => {
+                        println!("Terminal session terminated.");
                         return Ok(());
-                    }
+                    }, 
                 }
             }, 
-            LLMResponse::LLMSee(img_path) => {
-                let content = match Image::from_file(&img_path) {
-                    Ok(img) => img.into(), 
-                    Err(e) => e.to_string().into(), 
-                };
-
-                last_content_output = content;
+            Err(e) => {
+                llm.add_msg(
+                    Message {
+                        role: Role::User, 
+                        content: e.to_string().into(), 
+                    }
+                );
             }, 
-            LLMResponse::MaskContent(id) => {
-                llm.mask_message(id);
-                last_content_output = format!("message {id} is masked").into();
-            }, 
-            LLMResponse::Exit => {
-                println!("Terminal session terminated.");
-                return Ok(());
-            }, 
-        }
+        };
 
         if usage.n_input_tokens + usage.n_output_tokens > llm.max_context_tokens() * 9 / 10 {
             llm.add_msg(
