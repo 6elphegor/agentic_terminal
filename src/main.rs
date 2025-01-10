@@ -1,6 +1,8 @@
 use clap::{Parser, ValueEnum};
 use std::env;
 use std::{thread, time};
+use std::io;
+use std::io::Write;
 
 mod llm;
 mod anthropic;
@@ -199,16 +201,16 @@ fn run_session_loop_generic<Api: LLMApi>(
 
     let mut n_msgs_printed = 0;
 
-    loop {
-        // Send the last content output to the LLM
-        let (llm_resp, usage) = match llm.prompt(timeout) {
-            Ok(resp) => resp,
-            Err(e) => {
-                eprintln!("Error communicating with LLM: {}", e);
-                return Err(e);
-            }
-        };
+    let mut user_control = false;
 
+    llm.add_msg(
+        Message {
+            role: Role::User,
+            content: "".into(),
+        }
+    );
+
+    loop {
         let n_msgs = llm.num_msgs();
         for id in n_msgs_printed..n_msgs {
             let msg = llm
@@ -226,6 +228,43 @@ fn run_session_loop_generic<Api: LLMApi>(
             }
         }
         n_msgs_printed = n_msgs;
+
+        let (llm_resp, usage) = match user_control {
+            true => {
+                print!("LLM: {n_msgs}>>");
+                io::stdout().flush().expect("Failed to flush stdout");
+                n_msgs_printed += 1;
+
+                let mut input = String::new();
+                io::stdin().read_line(&mut input).expect("Failed to read line");
+                let llm_resp = serde_json::from_str(&input);
+                llm.add_msg(
+                    Message {
+                        role: Role::Assistant, 
+                        content: input.trim().into(), 
+                    }
+                );
+                (llm_resp, None)
+            }, 
+            false => {
+                match llm.prompt(timeout) {
+                    Ok((llm_resp, usage)) => (llm_resp, Some(usage)),
+                    Err(e) => {
+                        eprintln!("Error communicating with LLM: {}", e);
+                        return Err(e);
+                    }
+                }
+            }, 
+        };
+
+        // Send the last content output to the LLM
+        /*let (llm_resp, usage) = match llm.prompt(timeout) {
+            Ok(resp) => resp,
+            Err(e) => {
+                eprintln!("Error communicating with LLM: {}", e);
+                return Err(e);
+            }
+        };*/
 
         /*let response_id = llm.last_msg_id().unwrap();
         let prompt_id = response_id - 1;
@@ -279,6 +318,24 @@ fn run_session_loop_generic<Api: LLMApi>(
                             }
                         );
                     }, 
+                    LLMResponse::UserControl => {
+                        user_control = true;
+                        llm.add_msg(
+                            Message {
+                                role: Role::User, 
+                                content: "Switched to external control.".into(), 
+                            }
+                        );
+                    }, 
+                    LLMResponse::AgentControl => {
+                        user_control = false;
+                        llm.add_msg(
+                            Message {
+                                role: Role::User, 
+                                content: "Switched back to agent control.".into(), 
+                            }
+                        );
+                    }, 
                     LLMResponse::Exit => {
                         println!("Terminal session terminated.");
                         return Ok(());
@@ -289,19 +346,21 @@ fn run_session_loop_generic<Api: LLMApi>(
                 llm.add_msg(
                     Message {
                         role: Role::User, 
-                        content: e.to_string().into(), 
+                        content: "Invalid output. Omit id, must be json parsable.".into(), 
                     }
                 );
             }, 
         };
 
-        if usage.n_input_tokens + usage.n_output_tokens > llm.max_context_tokens() * 9 / 10 {
-            llm.add_msg(
-                Message {
-                    role: Role::User, 
-                    content: "Warning: over 90% of token context is used.".into(), 
-                }
-            );
+        if let Some(usage) = usage {
+            if usage.n_input_tokens + usage.n_output_tokens > llm.max_context_tokens() * 9 / 10 {
+                llm.add_msg(
+                    Message {
+                        role: Role::User, 
+                        content: "Warning: over 90% of token context is used.".into(), 
+                    }
+                );
+            }
         }
 
         // Add a small delay between iterations

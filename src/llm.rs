@@ -101,6 +101,8 @@ pub enum LLMResponse {
     Command(String),
     LLMSee(String),
     MaskContent(usize),
+    UserControl, 
+    AgentControl, 
     Exit,
 }
 
@@ -227,9 +229,17 @@ impl<Api: LLMApi> LLM<Api> {
                                     .extend_with_content(resp.resp.into());
                             }
 
-                            let output_string = <String>::try_from(&self.messages.last().unwrap().msg.content).unwrap();
+                            let msg = self.messages.pop().unwrap();
+                            let output_string = <String>::try_from(&msg.msg.content).unwrap();
+                            let trimmed = trim_id_prefix(&output_string);
+                            self.add_msg(
+                                Message {
+                                    role: Role::Assistant, 
+                                    content: trimmed.into(), 
+                                }
+                            );
 
-                            return Ok( (serde_json::from_str(&output_string), resp.usage) );
+                            return Ok( (serde_json::from_str(trimmed), resp.usage) );
                         },
                         StopReason::MaxTokens => {
                             if self.messages.len() == num_orig_msgs {
@@ -276,6 +286,18 @@ impl<Api: LLMApi> LLM<Api> {
             }
         }
     }
+}
+
+fn trim_id_prefix(input: &str) -> &str {
+    // Find the position after ">>" if it exists
+    if let Some(pos) = input.find(">>") {
+        let prefix = &input[..pos];
+        // Parse prefix to check if it's a valid integer
+        if prefix.parse::<i64>().is_ok() {
+            return &input[(pos + 2)..];
+        }
+    }
+    input
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -598,11 +620,13 @@ impl Image {
 
 
 
-fn output_examples() -> [LLMResponse; 4] {
+fn output_examples() -> [LLMResponse; 6] {
     [
         LLMResponse::Command("echo \"hello\"".to_string()),
         LLMResponse::LLMSee("img.png".to_string()),
         LLMResponse::MaskContent(42),
+        LLMResponse::UserControl, 
+        LLMResponse::AgentControl, 
         LLMResponse::Exit,
     ]
 }
@@ -627,6 +651,21 @@ For example, DO NOT output 34>> \"Exit\", rather than \"Exit\"
 
 The output format is json. Only one can be output. Here is an array of examples:
 {output_exps}
+The format must be precisely one of these.
+Example session:
+
+Terminal: 0>>
+LLM: 1>>{{\"Command\":\"echo -e '1\n1\n2\n3\n5' > fibonacci.txt\"}}
+Terminal: 2>>
+LLM: 3>>{{\"Command\":\"cat fibonacci.txt\"}}
+Terminal: 4>>1
+1
+2
+3
+5
+\"Exit\"
+
+The output is \"Exit\" and all else is in the context.
 
 Special Commands: 
 llmsee img_path, that lets you see an image, no other command work for viewing images.
