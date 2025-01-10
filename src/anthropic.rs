@@ -28,6 +28,14 @@ pub enum Model {
 }
 
 impl Model {
+    pub fn max_context_tokens(self) -> usize {
+        match self {
+            Model::Haiku3_5 => 200_000, 
+            Model::Sonnet3_5 => 200_000, 
+            Model::Opus3 => 200_000, 
+        }
+    }
+
     pub fn max_output_tokens(self) -> usize {
         match self {
             Model::Haiku3_5 => 8192, 
@@ -70,8 +78,17 @@ pub enum Content {
 impl From<llm::Content> for Content {
     fn from(content: llm::Content) -> Self {
         match content {
-            llm::Content::Text(text) => Content::PureText(text),
-            llm::Content::Image(_) => Content::Mixed(vec![content.into()]),
+            llm::Content::Single(c) => {
+                match c {
+                    llm::ContentItem::Text(txt) => Content::PureText(txt), 
+                    llm::ContentItem::Image(img) => Content::Mixed(vec![ContentElem::Image(img.into())]), 
+                }
+            }, 
+            llm::Content::Multiple(cs) => Content::Mixed(
+                cs.into_iter()
+                    .map(|c| c.into())
+                    .collect()
+            )
         }
     }
 }
@@ -102,11 +119,11 @@ impl Serialize for ContentElem {
     }
 }
 
-impl From<llm::Content> for ContentElem {
-    fn from(content: llm::Content) -> Self {
+impl From<llm::ContentItem> for ContentElem {
+    fn from(content: llm::ContentItem) -> Self {
         match content {
-            llm::Content::Text(text) => ContentElem::Text(text),
-            llm::Content::Image(image) => ContentElem::Image(image.into()),
+            llm::ContentItem::Text(text) => ContentElem::Text(text),
+            llm::ContentItem::Image(image) => ContentElem::Image(image.into()),
         }
     }
 }
@@ -250,6 +267,15 @@ pub struct UsageInfo {
     pub output_tokens: u32,
 }
 
+impl Into<llm::Usage> for UsageInfo {
+    fn into(self) -> llm::Usage {
+        llm::Usage {
+            n_input_tokens: self.input_tokens as usize, 
+            n_output_tokens: self.output_tokens as usize, 
+        }
+    }
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct ErrorResponse {
     #[serde(rename = "type")]
@@ -293,10 +319,14 @@ impl Into<LLMApiError> for ErrorType {
 }
 
 impl LLMApi for AnthropicApi {
-    fn prompt(&self, system_msg: &str, msgs: &[Message]) -> Result<ApiResponse, LLMApiError> {
+    fn max_context_tokens(&self) -> usize {
+        self.model.max_context_tokens()
+    }
+    
+    fn prompt(&self, system_msg: &str, msgs: impl IntoIterator<Item = Message>) -> Result<ApiResponse, LLMApiError> {
         let secret_key = self.secret_key.as_ref().ok_or(LLMApiError::AuthenticationError)?;
 
-        let msgs: Vec<AnthropicMessage> = msgs.iter().map(|msg| msg.clone().into()).collect();
+        let msgs: Vec<AnthropicMessage> = msgs.into_iter().map(|msg| msg.into()).collect();
 
         let request_body = AnthropicRequest {
             model: self.model,
@@ -328,10 +358,13 @@ impl LLMApi for AnthropicApi {
                     .try_into()
                     .map_err(|_| LLMApiError::Other)?;
 
+                let usage = response.usage.into();
+
                 Ok(
                     ApiResponse {
                         resp, 
                         stop_reason, 
+                        usage, 
                     }
                 )
             },

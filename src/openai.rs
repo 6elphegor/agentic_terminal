@@ -31,6 +31,28 @@ pub enum Model {
     O1Preview,
 }
 
+impl Model {
+    pub fn max_context_tokens(self) -> usize {
+        match self {
+            Model::GPT4O => 128_000, 
+            Model::GPT4OMini => 128_000, 
+            Model::O1 => 128_000, 
+            Model::O1Mini => 128_000, 
+            Model::O1Preview => 128_000, 
+        }
+    }
+
+    pub fn max_output_tokens(self) -> usize {
+        match self {
+            Model::GPT4O => 4096, 
+            Model::GPT4OMini => 4096, 
+            Model::O1 => 4096, 
+            Model::O1Mini => 4096, 
+            Model::O1Preview => 4096, 
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(untagged)]
 pub enum Sampling {
@@ -75,8 +97,17 @@ pub enum Content {
 impl From<llm::Content> for Content {
     fn from(content: llm::Content) -> Self {
         match content {
-            llm::Content::Text(text) => Content::PureText(text),
-            llm::Content::Image(_) => Content::Mixed(vec![content.into()]),
+            llm::Content::Single(c) => {
+                match c {
+                    llm::ContentItem::Text(txt) => Content::PureText(txt), 
+                    llm::ContentItem::Image(img) => Content::Mixed(vec![ContentElem::Image(img.into())]), 
+                }
+            }, 
+            llm::Content::Multiple(cs) => Content::Mixed(
+                cs.into_iter()
+                    .map(|c| c.into())
+                    .collect()
+            )
         }
     }
 }
@@ -87,11 +118,11 @@ pub enum ContentElem {
     Image(Image), 
 }
 
-impl From<llm::Content> for ContentElem {
-    fn from(content: llm::Content) -> Self {
+impl From<llm::ContentItem> for ContentElem {
+    fn from(content: llm::ContentItem) -> Self {
         match content {
-            llm::Content::Text(text) => ContentElem::Text(text),
-            llm::Content::Image(image) => ContentElem::Image(image.into()),
+            llm::ContentItem::Text(text) => ContentElem::Text(text),
+            llm::ContentItem::Image(image) => ContentElem::Image(image.into()),
         }
     }
 }
@@ -261,6 +292,15 @@ pub struct UsageInfo {
     pub completion_tokens_details: TokenDetails,
 }
 
+impl Into<llm::Usage> for UsageInfo {
+    fn into(self) -> llm::Usage {
+        llm::Usage {
+            n_input_tokens: self.prompt_tokens as usize, 
+            n_output_tokens: self.completion_tokens as usize, 
+        }
+    }
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct TokenDetails {
     pub reasoning_tokens: u32,
@@ -284,7 +324,11 @@ impl From<reqwest::StatusCode> for LLMApiError {
 
 
 impl LLMApi for OAIApi {
-    fn prompt(&self, system_msg: &str, msgs: &[Message]) -> Result<ApiResponse, LLMApiError> {
+    fn max_context_tokens(&self) -> usize {
+        self.model.max_context_tokens()
+    }
+
+    fn prompt(&self, system_msg: &str, msgs: impl IntoIterator<Item = Message>) -> Result<ApiResponse, LLMApiError> {
         let secret_key = self.secret_key.as_ref().ok_or(LLMApiError::AuthenticationError)?;
 
         // As of January 2025 
@@ -303,7 +347,7 @@ impl LLMApi for OAIApi {
 
         let mut messages = vec![system_msg];
 
-        messages.extend(msgs.iter().map(|msg| msg.clone().into()));
+        messages.extend(msgs.into_iter().map(|msg| msg.into()));
 
         let request_body = OAIRequest {
             model: self.model,
@@ -337,10 +381,13 @@ impl LLMApi for OAIApi {
             .try_into()
             .map_err(|_| LLMApiError::Other)?;
 
+        let usage = result.usage.into();
+
         Ok(
             ApiResponse {
                 resp, 
                 stop_reason, 
+                usage, 
             }
         )
     }

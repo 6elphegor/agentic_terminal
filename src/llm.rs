@@ -6,19 +6,27 @@ use std::iter;
 
 
 pub trait LLMApi: Serialize {
-    fn prompt(&self, system_msg: &str, msgs: &[Message]) -> Result<ApiResponse, LLMApiError>;
+    fn prompt(&self, system_msg: &str, msgs: impl IntoIterator<Item = Message>) -> Result<ApiResponse, LLMApiError>;
+    fn max_context_tokens(&self) -> usize;
 }
 
 #[derive(Debug, Clone)]
 pub struct ApiResponse {
     pub resp: String, 
     pub stop_reason: StopReason, 
+    pub usage: Usage, 
 }
 
 #[derive(Debug, Copy, Clone)]
 pub enum StopReason {
     EndTurn, 
     MaxTokens, 
+}
+
+#[derive(Debug, Clone)]
+pub struct Usage {
+    pub n_input_tokens: usize, 
+    pub n_output_tokens: usize, 
 }
 
 #[derive(Debug)]
@@ -85,13 +93,14 @@ impl Error for LLMApiError {
 pub struct LLM<Api: LLMApi> {
     api: Api, 
     system_msg: String, 
-    messages: Vec<Message>, 
+    messages: Vec<MaskableMessage>, 
 }
 
 #[derive(Debug, Clone)]
 pub enum LLMResponse {
     Command(String),
     LLMSee(String),
+    MaskContent(usize),
     Exit,
 }
 
@@ -101,6 +110,12 @@ impl LLMResponse {
             Self::Exit
         } else if let Some(path) = s.strip_prefix("llmsee ") {
             Self::LLMSee(path.to_string())
+        } else if let Some(num_str) = s.strip_prefix("maskcontent ") {
+            if let Ok(num) = num_str.trim().parse::<usize>() {
+                Self::MaskContent(num)
+            } else {
+                Self::Command(s.to_string())
+            }
         } else {
             Self::Command(s.to_string())
         }
@@ -110,6 +125,7 @@ impl LLMResponse {
         match self {
             LLMResponse::Command(cmd) => cmd.clone(),
             LLMResponse::LLMSee(path) => format!("llmsee {}", path),
+            LLMResponse::MaskContent(num) => format!("maskcontent {}", num),
             LLMResponse::Exit => "exit".to_string(),
         }
     }
@@ -124,10 +140,49 @@ impl<Api: LLMApi> LLM<Api> {
         }
     }
 
-    fn prompt_partial_output(&mut self, msg: Message) -> Result<ApiResponse, LLMApiError> {
-        self.messages.push(msg);
+    pub fn max_context_tokens(&self) -> usize {
+        self.api.max_context_tokens()
+    }
 
-        match self.api.prompt(&self.system_msg, &self.messages) {
+    pub fn add_msg(&mut self, msg: Message) {
+        let id = self.next_msg_id();
+        self.messages.push(
+            MaskableMessage {
+                id: id, 
+                is_masked: false, 
+                msg: msg, 
+            }
+        )
+    }
+
+    pub fn num_msgs(&self) -> usize {
+        self.messages.len()
+    }
+
+    pub fn last_msg_id(&self) -> Option<usize> {
+        if self.messages.is_empty() {
+            None
+        } else {
+            Some(self.messages.len() - 1)
+        }
+    }
+
+    pub fn get_msg(&self, id: usize) -> Option<&MaskableMessage> {
+        self.messages.get(id)
+    }
+
+    pub fn next_msg_id(&self) -> usize {
+        self.messages.len()
+    }
+
+    pub fn mask_message(&mut self, id: usize) {
+        self.messages[id].is_masked = true;
+    }
+
+    fn prompt_partial_output(&mut self, msg: Message) -> Result<ApiResponse, LLMApiError> {
+        self.add_msg(msg);
+
+        match self.api.prompt(&self.system_msg, self.messages.iter().filter_map(|msg| msg.to_message_with_id())) {
             Ok(resp) => {
                 Ok(resp)
             }, 
@@ -138,8 +193,8 @@ impl<Api: LLMApi> LLM<Api> {
         }
     }
 
-    pub fn prompt(&mut self, user_content: Content, timeout: time::Duration) -> Result<LLMResponse, LLMApiError> {
-        let orig_msgs = self.messages.clone();
+    pub fn prompt(&mut self, user_content: Content, timeout: time::Duration) -> Result<(LLMResponse, Usage), LLMApiError> {
+        let num_orig_msgs = self.messages.len();
         let mut error_start_time: Option<time::Instant> = None;
         
         let mut msg = Message {
@@ -158,20 +213,20 @@ impl<Api: LLMApi> LLM<Api> {
                             // concatenate messages
                             let assistant_output: String = self.messages
                                 .iter()
-                                .skip(orig_msgs.len() + 1)
-                                .map(|msg| <&str>::try_from(&msg.content).unwrap())
-                                .chain(iter::once(resp.resp.as_str()))
+                                .skip(num_orig_msgs + 1)
+                                .map(|msg| <String>::try_from(&msg.msg.content).unwrap())
+                                .chain(iter::once(resp.resp.clone()))
                                 .collect();
 
-                            self.messages = orig_msgs;
-                            self.messages.push(
+                            self.messages.truncate(num_orig_msgs + 1);
+                            self.add_msg(
                                 Message {
                                     role: Role::Assistant, 
                                     content: assistant_output.clone().into(), 
                                 }
                             );
 
-                            return Ok(LLMResponse::from_str(assistant_output.as_str()));
+                            return Ok( (LLMResponse::from_str(assistant_output.as_str()), resp.usage));
                         },
                         StopReason::MaxTokens => {
                             msg = Message {
@@ -192,7 +247,7 @@ impl<Api: LLMApi> LLM<Api> {
                             
                             // Check if we've exceeded timeout since first error
                             if start_time.elapsed() >= timeout {
-                                self.messages = orig_msgs;
+                                self.messages.truncate(num_orig_msgs);
                                 return Err(err);
                             }
                             
@@ -200,12 +255,56 @@ impl<Api: LLMApi> LLM<Api> {
                             continue;
                         },
                         _ => {
-                            self.messages = orig_msgs;
+                            self.messages.truncate(num_orig_msgs);
                             return Err(err)
                         },
                     }
                 }
             }
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MaskableMessage {
+    id: usize, 
+    is_masked: bool,
+    msg: Message,
+}
+
+impl MaskableMessage {
+    pub fn get_message(&self) -> &Message {
+        &self.msg
+    }
+
+    pub fn to_message_with_id(&self) -> Option<Message> {
+        match self.is_masked {
+            true => None, 
+            false => Some(self.to_message_with_id_no_mask()), 
+        }
+    }
+
+    pub fn to_message_with_id_no_mask(&self) -> Message {
+        let id = self.id;
+        let id_msg = format!("{id}>>");
+        let content_with_id = match &self.msg.content {
+            Content::Single(c) => {
+                match c {
+                    ContentItem::Text(txt) => Content::Single( (id_msg + txt).into() ), 
+                    ContentItem::Image(img) => Content::Multiple(vec![id_msg.into(), img.clone().into()])
+                }
+            }, 
+            Content::Multiple(cs) => {
+                let cs_with_id = iter::once(id_msg.into())
+                    .chain(cs.iter().cloned())
+                    .collect();
+                Content::Multiple(cs_with_id)
+            }, 
+        };
+
+        Message {
+            role: self.msg.role, 
+            content: content_with_id, 
         }
     }
 }
@@ -224,35 +323,108 @@ pub enum Role {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Content {
-    Text(String), 
-    Image(Image), 
+    Single(ContentItem), 
+    Multiple(Vec<ContentItem>), 
+}
+
+impl Content {
+    pub fn to_string(&self) -> String {
+        match self {
+            Content::Single(c) => c.to_string(), 
+            Content::Multiple(cs) => cs
+                                    .iter()
+                                    .map(|c| c.to_string())
+                                    .collect(), 
+        }
+    }
 }
 
 impl From<String> for Content {
-    fn from(text: String) -> Self {
-        Content::Text(text)
+    fn from(s: String) -> Self {
+        Content::Single(s.into())
     }
 }
 
 impl From<&str> for Content {
-    fn from(text: &str) -> Self {
-        Content::Text(text.to_string())
+    fn from(s: &str) -> Self {
+        Content::Single(s.into())
     }
 }
 
 impl From<Image> for Content {
-    fn from(image: Image) -> Self {
-        Content::Image(image)
+    fn from(img: Image) -> Self {
+        Content::Single(img.into())
     }
 }
 
-impl<'a> TryFrom<&'a Content> for &'a str {
+impl From<Vec<ContentItem>> for Content {
+    fn from(cts: Vec<ContentItem>) -> Self {
+        Content::Multiple(cts)
+    }
+}
+
+impl TryFrom<&Content> for String {
+    type Error = &'static str;
+    
+    fn try_from(content: &Content) -> Result<Self, Self::Error> {
+        match content {
+            Content::Single(c) => match c {
+                ContentItem::Text(s) => Ok(s.clone()),
+                ContentItem::Image(_) => Err("Cannot convert Image content to String"),
+            },
+            Content::Multiple(items) => {
+                items.iter()
+                    .map(|item| match item {
+                        ContentItem::Text(s) => Ok(s.as_str()),
+                        ContentItem::Image(_) => Err("Cannot convert Image content to String"),
+                    })
+                    .collect::<Result<Vec<&str>, _>>()
+                    .map(|strs| strs.into_iter().collect())
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum ContentItem {
+    Text(String), 
+    Image(Image), 
+}
+
+impl ContentItem {
+    pub fn to_string(&self) -> String {
+        match self {
+            ContentItem::Text(txt) => txt.to_string(), 
+            ContentItem::Image(img) => img.to_string(), 
+        }
+    }
+}
+
+impl From<String> for ContentItem {
+    fn from(text: String) -> Self {
+        ContentItem::Text(text)
+    }
+}
+
+impl From<&str> for ContentItem {
+    fn from(text: &str) -> Self {
+        ContentItem::Text(text.to_string())
+    }
+}
+
+impl From<Image> for ContentItem {
+    fn from(image: Image) -> Self {
+        ContentItem::Image(image)
+    }
+}
+
+impl<'a> TryFrom<&'a ContentItem> for &'a str {
     type Error = &'static str;
 
-    fn try_from(content: &'a Content) -> Result<Self, Self::Error> {
+    fn try_from(content: &'a ContentItem) -> Result<Self, Self::Error> {
         match content {
-            Content::Text(text) => Ok(text.as_str()),
-            Content::Image(_) => Err("Cannot convert Image content to &str"),
+            ContentItem::Text(text) => Ok(text.as_str()),
+            ContentItem::Image(_) => Err("Cannot convert Image content to &str"),
         }
     }
 }
@@ -262,6 +434,12 @@ pub struct Image {
     pub image_type: ImageType, 
     #[serde(skip)]
     pub data: String, 
+}
+
+impl Image {
+    pub fn to_string(&self) -> String {
+        format!("<{} image>", self.image_type.extension())
+    }
 }
 
 #[derive(Debug, Copy, Clone, Serialize, Deserialize)]
@@ -391,7 +569,19 @@ Also, cd command does not work, don't use it, paths must be relative to current 
 This is due to limitations of the terminal you will be interfacing with.
 When the task is completed or if you do not expect to be able to complete it, exit the terminal.
 
-There is a special command, llmsee img_path, that lets you see an image, no other command work for viewing images.
+Each previous message will have id>>, where id is the integer identifier.
+Do not prepend id>> to your outputs, it is implicit.
+
+Special Commands: Note special commands cannot be used with normal commands and only one can be called at a time.
+For example this are invalid: ls \n lmsee img.png
+this is also invalid: lmsee img.png \n maskcontent 1
+but this is valid: lmsee img.png
+
+
+llmsee img_path, that lets you see an image, no other command work for viewing images.
+maskcontent id, masks the content with the specified id which frees space in the context window, use for content that takes up significant space (like documents/codefiles/etc) and is no longer expected to be needed.
+Be especially aggressive with this for images as they take up significant context, often only a single image is need in the entire context at a time.
+
 Everything you output must be a single line terminal command. If you need to think or just say something, use the colon command, example : \"my thoughts must be in quotes\".
 
 Due to token output limits, sometimes a partial command is issued. In that case there will need to be multiple assistant messages in sequence to complete the entire command.
