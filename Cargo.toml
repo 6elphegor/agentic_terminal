@@ -11,3 +11,4 @@ base64 = "0.22.1"
 uuid = { version = "1.11.0", features = ["v7", "fast-rng"] }
 dirs = "5.0.1"
 clap = { version = "4.5.23", features = ["derive"] }
+rexpect = "0.6"

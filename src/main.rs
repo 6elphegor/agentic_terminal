@@ -104,6 +104,8 @@ impl LLMKind {
     }
 }
 
+
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     /*let api_key = env::var("API_KEY")
         .map_err(|_| "Please set the environment variable API_KEY")?;
@@ -114,9 +116,52 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Response: {:?}", resp);
     return Ok(());*/
 
+    
+    /*let mut term = Terminal::new()?;
+    let s = "echo -e 'Mewtwo\\nMew\\nRayquaza\\nGiratina\\nArceus' > strongest_pokemon.txt";
+    println!("? : {s}");
+    
+    // Multi-line command
+    let result = term.run_command("echo -e 'Mewtwo\\nMew\\nRayquaza\\nGiratina\\nArceus' > strongest_pokemon.txt", time::Duration::from_secs(3))?;
+    match result {
+        CommandOutput::Complete(output) => {
+            println!("Complete: {output}");
+        }, 
+        CommandOutput::Partial(output) => {
+            println!("Partial: {output}");
+        }, 
+    }
+
+    let result = term.run_command("ls", time::Duration::from_secs(3))?;
+    match result {
+        CommandOutput::Complete(output) => {
+            println!("Complete: {output}");
+        }, 
+        CommandOutput::Partial(output) => {
+            println!("Partial: {output}");
+        }, 
+    }
+    /*println!("Output: {}", result.output);
+    println!("Stop reason: {:?}", result.stop_reason);
+    
+    // Command that will timeout after no output for 5 seconds
+    let result = term.run_command("sleep 20", Duration::from_secs(5))?;
+    println!("Output: {}", result.output);
+    println!("Stop reason: {:?}", result.stop_reason);*/
+
+    println!("Hallo?");
+    
+    return Ok(());*/
 
 
 
+    /*let terminal = Terminal::new();
+    //let (terminal, output) = prompt_terminal(terminal, "sudo apt-get install firefox").unwrap();
+    let (terminal, output) = prompt_terminal(terminal, "read -p \"Enter your name: \" username").unwrap();
+    
+    let (terminal, output) = prompt_terminal(terminal, "ls").unwrap();
+    println!("Output: {output}");
+    return Ok(());*/
 
 
 
@@ -159,10 +204,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     // Set up the local pseudo-terminal
-    let terminal = Terminal::new();
+    let terminal = Terminal::new()?;
+    let command_timeout = time::Duration::from_secs(2);
 
     // Run the conversation loop
-    if let Err(e) = run_session_loop(&mut llm_kind, terminal) {
+    if let Err(e) = run_session_loop(&mut llm_kind, terminal, command_timeout) {
         eprintln!("Session loop terminated with error: {}", e);
         // If an error occurs, still save the session log
         if let Err(e2) = llm_kind.apply(
@@ -186,16 +232,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 /// Runs a loop that prompts the LLM and feeds it terminal output
-fn run_session_loop(llm_kind: &mut LLMKind, terminal: Terminal) -> Result<(), LLMApiError> {
+fn run_session_loop(llm_kind: &mut LLMKind, terminal: Terminal, command_timeout: time::Duration) -> Result<(), LLMApiError> {
     match llm_kind {
-        LLMKind::AnthropicLLM(llm) => run_session_loop_generic(llm, terminal), 
-        LLMKind::OpenAILLM(llm) => run_session_loop_generic(llm, terminal), 
+        LLMKind::AnthropicLLM(llm) => run_session_loop_generic(llm, terminal, command_timeout), 
+        LLMKind::OpenAILLM(llm) => run_session_loop_generic(llm, terminal, command_timeout), 
     }
 }
 
 fn run_session_loop_generic<Api: LLMApi>(
     llm: &mut LLM<Api>,
-    mut terminal: Terminal
+    mut terminal: Terminal, 
+    command_timeout: time::Duration, 
 ) -> Result<(), LLMApiError> {
     let timeout = time::Duration::from_secs(10);
 
@@ -279,9 +326,13 @@ fn run_session_loop_generic<Api: LLMApi>(
                 match llm_resp {
                     LLMResponse::Command(command) => {
                         // Execute in the hidden terminal
-                        match prompt_terminal(terminal, &command) {
-                            Some((new_terminal, output)) => {
-                                terminal = new_terminal;
+                        match terminal.run_command(&command, command_timeout) {
+                            Ok(output) => {
+                                let output = match output {
+                                    CommandOutput::Complete(out) => out, 
+                                    CommandOutput::Partial(out) => format!("Partial output, command timed out: {out}"), 
+                                };
+
                                 llm.add_msg(
                                     Message {
                                         role: Role::User, 
@@ -289,9 +340,8 @@ fn run_session_loop_generic<Api: LLMApi>(
                                     }
                                 );
                             }
-                            None => {
-                                // If None, LLM typed "exit"
-                                println!("LLM terminated terminal session.");
+                            Err(e) => {
+                                eprintln!("Terminal error: {e}");
                                 return Ok(());
                             }
                         }

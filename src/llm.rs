@@ -655,7 +655,7 @@ The format must be precisely one of these.
 Example session:
 
 Terminal: 0>>
-LLM: 1>>{{\"Command\":\"echo -e '1\n1\n2\n3\n5' > fibonacci.txt\"}}
+LLM: 1>>{{\"Command\":\"echo -e '1\\\\n1\\\\n2\\\\n3\\\\n5' > fibonacci.txt\"}}
 Terminal: 2>>
 LLM: 3>>{{\"Command\":\"cat fibonacci.txt\"}}
 Terminal: 4>>1
@@ -666,6 +666,8 @@ Terminal: 4>>1
 \"Exit\"
 
 The output is \"Exit\" and all else is in the context.
+All command strings must be single line, no newlines!
+This is neccessary. Use \\\\n for newlines in strings.
 
 Special Commands: 
 llmsee img_path, that lets you see an image, no other command work for viewing images.
