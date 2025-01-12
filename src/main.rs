@@ -107,6 +107,14 @@ impl LLMKind {
 
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /*let s = r#"{"Command":"echo -e 'Mewtwo\nRayquaza\nGroudon\nKyogre\nArceus' > strongest_pokemon.txt"}"#;
+
+    let resp = serde_json::from_str::<LLMResponse>(s);
+
+    println!("Resp: {:?}", resp);
+
+    return Ok(());*/
+
     /*let api_key = env::var("API_KEY")
         .map_err(|_| "Please set the environment variable API_KEY")?;
     let anthropic_api = OAIApi::new(api_key, openai::Model::GPT4O);
@@ -122,7 +130,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("? : {s}");
     
     // Multi-line command
-    let result = term.run_command("echo -e 'Mewtwo\\nMew\\nRayquaza\\nGiratina\\nArceus' > strongest_pokemon.txt", time::Duration::from_secs(3))?;
+    let result = term.run_command("echo -e 'Mewtwo\\nMew\\nRayquaza\\nGiratina\\nArceus' > strongest_pokemon.txt \\n ls", time::Duration::from_secs(3))?;
     match result {
         CommandOutput::Complete(output) => {
             println!("Complete: {output}");
@@ -132,7 +140,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }, 
     }
 
-    let result = term.run_command("ls", time::Duration::from_secs(3))?;
+    /*let result = term.run_command("ls", time::Duration::from_secs(3))?;
     match result {
         CommandOutput::Complete(output) => {
             println!("Complete: {output}");
@@ -140,7 +148,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         CommandOutput::Partial(output) => {
             println!("Partial: {output}");
         }, 
-    }
+    }*/
     /*println!("Output: {}", result.output);
     println!("Stop reason: {:?}", result.stop_reason);
     
@@ -325,6 +333,7 @@ fn run_session_loop_generic<Api: LLMApi>(
             Ok(llm_resp) => {
                 match llm_resp {
                     LLMResponse::Command(command) => {
+                        io::stdout().flush().unwrap();
                         // Execute in the hidden terminal
                         match terminal.run_command(&command, command_timeout) {
                             Ok(output) => {
