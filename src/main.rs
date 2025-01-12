@@ -126,11 +126,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     
     /*let mut term = Terminal::new()?;
-    let s = "echo -e 'Mewtwo\\nMew\\nRayquaza\\nGiratina\\nArceus' > strongest_pokemon.txt";
+    let s = "echo -e \\\"Mewtwo\\nGroudon\\nRayquaza\\nArceus\\nZacian\\\" > strongest_pokemon.txt";
     println!("? : {s}");
     
     // Multi-line command
-    let result = term.run_command("echo -e 'Mewtwo\\nMew\\nRayquaza\\nGiratina\\nArceus' > strongest_pokemon.txt \\n ls", time::Duration::from_secs(3))?;
+    let result = term.run_command(s, time::Duration::from_secs(3))?;
     match result {
         CommandOutput::Complete(output) => {
             println!("Complete: {output}");
@@ -329,11 +329,12 @@ fn run_session_loop_generic<Api: LLMApi>(
         println!("Terminal: {}", last_prompt_msg.to_message_with_id_no_mask().content.to_string());
         println!("LLM: {}", last_response_msg.to_message_with_id_no_mask().content.to_string());*/
 
+        
+
         match llm_resp {
             Ok(llm_resp) => {
                 match llm_resp {
                     LLMResponse::Command(command) => {
-                        io::stdout().flush().unwrap();
                         // Execute in the hidden terminal
                         match terminal.run_command(&command, command_timeout) {
                             Ok(output) => {

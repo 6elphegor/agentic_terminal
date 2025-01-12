@@ -660,8 +660,8 @@ Terminal: 4>>1
 5
 \"Exit\"
 The output is \"Exit\", not {{\"Exit\"}}, and all else is in the context.
-All command strings must be single line, no newlines!
-This is neccessary. Must be two slashes, \\\\!
+Note due to json quirks you must use two slashes for newlines \\\\n within strings, because json parsing treats \\n as a real newline.
+This is neccessary.
 Everything you output must be a single line terminal command. If you need to think or just say something, use the colon command, example : \"my thoughts must be in quotes\".
 Special Commands:
 llmsee img_path, lets you see an image, no other command works for viewing images.

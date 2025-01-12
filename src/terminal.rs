@@ -34,6 +34,7 @@ impl Terminal {
     }
 
     pub fn run_line(&mut self, line: &str, timeout: Duration) -> Result<CommandOutput, Error> {
+        let line = line.trim();
         if line.trim() == "exit" {
             //return Err("Exit requested".into());
             panic!();
@@ -87,6 +88,8 @@ impl Terminal {
 
     pub fn run_command(&mut self, command: &str, timeout: Duration) -> Result<CommandOutput, Box<dyn std::error::Error>> {
         let mut output = String::new();
+
+        let command = command.trim();
 
         // Replace newlines with actual newlines and send command
         for line in command.lines() {
